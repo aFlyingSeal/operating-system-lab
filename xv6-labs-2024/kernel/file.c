@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -23,6 +24,31 @@ void
 fileinit(void)
 {
   initlock(&ftable.lock, "ftable");
+}
+
+// Copy the visible fields of every open file into out[] and its address into
+// fp[], so the caller can match processes to files after dropping the lock.
+// Returns the number of entries written.  Callers must serialize themselves.
+int
+filesnapshot(struct sysinfo_file *out, struct file **fp, int max)
+{
+  struct file *f;
+  int n = 0;
+
+  acquire(&ftable.lock);
+  for(f = ftable.file; f < ftable.file + NFILE; f++){
+    if(f->ref > 0 && n < max){
+      out[n].type = f->type;
+      out[n].readable = f->readable;
+      out[n].writable = f->writable;
+      out[n].ref = f->ref;
+      out[n].npid = 0;
+      fp[n] = f;
+      n++;
+    }
+  }
+  release(&ftable.lock);
+  return n;
 }
 
 // Allocate a file structure.

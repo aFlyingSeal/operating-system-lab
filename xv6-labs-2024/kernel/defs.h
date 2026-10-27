@@ -8,6 +8,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct sysinfo_file;
 
 // bio.c
 void            binit(void);
@@ -33,6 +34,7 @@ void            fileinit(void);
 int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
+int             filesnapshot(struct sysinfo_file*, struct file**, int);
 
 // fs.c
 void            fsinit(int);
@@ -134,12 +136,14 @@ int             strncmp(const char*, const char*, uint);
 char*           strncpy(char*, const char*, int);
 
 // syscall.c
-void            argint(int, int*);
-int             argstr(int, char*, int);
+void            argint(int, int*);int             argstr(int, char*, int);
 void            argaddr(int, uint64 *);
 int             fetchstr(uint64, char*, int);
 int             fetchaddr(uint64, uint64*);
 void            syscall();
+
+// sysproc.c
+void            sysinfoinit(void);
 
 // trap.c
 extern uint     ticks;
