@@ -93,6 +93,7 @@ struct proc {
   int pid;                     // Process ID
 
   int trace_mask;
+  int nsched;                  // times scheduler() picked this process
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
