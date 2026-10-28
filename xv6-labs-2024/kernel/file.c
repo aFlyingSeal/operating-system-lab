@@ -37,7 +37,7 @@ filesnapshot(struct sysinfo_file *out, struct file **fp, int max)
 
   acquire(&ftable.lock);
   for(f = ftable.file; f < ftable.file + NFILE; f++){
-    if(f->ref > 0 && n < max){
+    if(f->ref > 0 && f->type != FD_NONE && n < max){
       out[n].type = f->type;
       out[n].readable = f->readable;
       out[n].writable = f->writable;
