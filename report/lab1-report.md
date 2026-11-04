@@ -1,6 +1,6 @@
 # Báo cáo Lab 1 – File & Process Management
 
-Bản báo cáo này trình bày **khảo sát mã nguồn xv6 (mục 4.1)** và **cài đặt, kiểm thử system call `sysinfo` (mục 4.2)** của đề bài. Phần 4.1 tập trung vào luồng file descriptor, `open`, `fork` và cơ chế định thời; phần 4.2 trình bày thiết kế ABI, cách thu thập dữ liệu, đồng bộ lock và kết quả của `user/sysinfotest.c` trên QEMU.
+Bản báo cáo này trình bày **khảo sát mã nguồn xv6 (mục 4.1)** và **cài đặt, kiểm thử system call `sysinfo` (mục 4.2)** của đề bài. Mục 4.1 được tách thành chương 2 (quản lý file) và chương 3 (quản lý tiến trình); mục 4.2 được trình bày ở chương 4, gồm thiết kế ABI, cách thu thập dữ liệu, đồng bộ lock và kết quả của `user/sysinfotest.c` trên QEMU.
 
 ## Thông tin nhóm
 
@@ -25,14 +25,14 @@ Bảng đối chiếu giữa yêu cầu của đề và các mục trong báo c�
 | **4.1** – `ofile[]` của `struct proc`, `file[]` của `ftable` | 2.1 |
 | **4.1** – Luồng `syscall open` | 2.2 |
 | **4.1** – So sánh file descriptor trong `open`, `dup`, `fork` | 2.3 |
-| **4.1** – `pid`, `state`, `context` của `struct proc` | 2.4 |
-| **4.1** – Luồng `syscall fork` | 2.5 |
-| **4.1** – Cơ chế `scheduler()`, `sched()`, `yield()` | 2.6 |
-| **4.2** – Số open file và thông tin từng file | 3.1–3.3 |
-| **4.2** – Danh sách tiến trình và thông tin từng tiến trình | 3.1–3.3 |
-| **4.2** – `user/sysinfotest.c` và kết quả kiểm thử | 3.5 |
+| **4.1** – `pid`, `state`, `context` của `struct proc` | 3.1 |
+| **4.1** – Luồng `syscall fork` | 3.2 |
+| **4.1** – Cơ chế `scheduler()`, `sched()`, `yield()` | 3.3 |
+| **4.2** – Số open file và thông tin từng file | 4.1–4.3 |
+| **4.2** – Danh sách tiến trình và thông tin từng tiến trình | 4.1–4.3 |
+| **4.2** – `user/sysinfotest.c` và kết quả kiểm thử | 4.5 |
 
-# 2. Khảo sát (mục 4.1)
+# 2. Quản lý file (mục 4.1)
 
 ## 2.1. Hai tầng quản lý file: `ofile[]` và `ftable.file[]`
 
@@ -263,9 +263,11 @@ Với `fork`, thứ tự ngược lại về mặt logic: con đã có bản sao
 
 Với `FD_PIPE`, `struct file` dùng `f->pipe` thay cho `ip`/`off`. `sys_pipe` (`sysfile.c:478`) tạo **hai** open file description – đầu đọc và đầu ghi – cùng trỏ tới một `struct pipe`; `fork` chia sẻ cả hai, nên cha con giao tiếp được qua pipe. Đầu đọc chỉ nhận EOF khi mọi bản sao của đầu ghi đã đóng, vì vậy `ref` và các cờ `readopen`/`writeopen` trong `struct pipe` đều phải được theo dõi.
 
-## 2.4. Các trường `pid`, `state`, `context` của `struct proc`
+# 3. Quản lý tiến trình (mục 4.1)
 
-### 2.4.1. `pid` và `state`
+## 3.1. Các trường `pid`, `state`, `context` của `struct proc`
+
+### 3.1.1. `pid` và `state`
 
 `pid` là định danh duy nhất của tiến trình, được cấp trong `allocproc()` (`proc.c:110`) và được dùng bởi `getpid`, `kill`, `wait`, cũng như để cha nhận diện con sau `fork`. `struct proc` còn lưu `parent` – con trỏ tới tiến trình cha – nhưng trường này được bảo vệ bởi `wait_lock` chứ không phải `p->lock`, vì `wait()` quét toàn bảng để tìm con.
 
@@ -282,7 +284,7 @@ Với `FD_PIPE`, `struct file` dùng `f->pipe` thay cho `ip`/`off`. `sys_pipe` (
 
 Tiến trình `ZOMBIE` vẫn chiếm slot và giữ `pid` nhưng không chạy được; chỉ khi cha gọi `wait()` thì `freeproc()` mới đưa nó về `UNUSED`. Vì vậy tiến trình không được `wait` sẽ thành zombie.
 
-### 2.4.2. `context` và `trapframe`: hai loại ngữ cảnh khác nhau
+### 3.1.2. `context` và `trapframe`: hai loại ngữ cảnh khác nhau
 
 Đây là điểm dễ nhầm nhất trong `struct proc`. xv6 lưu **hai** ngữ cảnh riêng biệt:
 
@@ -300,15 +302,15 @@ Vì sao `context` chỉ cần 14 thanh ghi? Vì `swtch()` là một lời gọi 
 
 `struct cpu` (`proc.h:22`) cũng có một `struct context` riêng. Đó là ngữ cảnh của **kernel thread điều phối** trên CPU đó: khi `swtch(&c->context, &p->context)` được gọi, ngữ cảnh của scheduler được lưu vào `c->context`, còn ngữ cảnh của tiến trình được nạp từ `p->context`. Nhờ vậy mỗi CPU có thể quay lại đúng vòng lặp `scheduler()` sau khi tiến trình nhường CPU.
 
-### 2.4.3. Đồng bộ hoá
+### 3.1.3. Đồng bộ hoá
 
 `struct proc` có một spinlock riêng `p->lock`. Các trường `state`, `pid`, `chan`, `killed`, `xstate` phải được đọc/ghi khi giữ lock này. Riêng `parent` được bảo vệ bởi `wait_lock` toàn cục, vì `wait()` cần quét nhất quán quan hệ cha–con trong khi `fork()` và `exit()` có thể thay đổi nó.
 
 Các trường còn lại như `ofile[]`, `cwd`, `sz`, `pagetable`, `trapframe`, `name` là **riêng của tiến trình**: chỉ chính tiến trình đó sửa, nên không cần `p->lock`. Đây là lý do `fork()` có thể đọc `p->ofile[i]` mà không cần giữ lock của cha. Tuy nhiên, khi một tiến trình khác (ví dụ system call `sysinfo` ở mục 4.2) muốn đọc `ofile[]` của tiến trình khác, nó phải cẩn thận với thứ tự lock để tránh deadlock.
 
-## 2.5. Luồng `syscall fork`
+## 3.2. Luồng `syscall fork`
 
-### 2.5.1. Các bước
+### 3.2.1. Các bước
 
 `sys_fork()` (`kernel/sysproc.c:26`) chỉ đơn giản gọi `fork()` trong `kernel/proc.c:282`. Luồng chính:
 
@@ -337,7 +339,7 @@ flowchart TD
   J -->|con| L["scheduler chọn, chạy forkret<br/>rồi usertrapret, fork trả 0"]
 ```
 
-### 2.5.2. Vì sao `fork()` "trả về hai lần"
+### 3.2.2. Vì sao `fork()` "trả về hai lần"
 
 Trong cùng một lời gọi `fork()`, có hai luồng thực thi tiếp tục từ hai kernel stack khác nhau:
 
@@ -346,15 +348,15 @@ Trong cùng một lời gọi `fork()`, có hai luồng thực thi tiếp tục 
 
 Nói cách khác, `fork()` không thực sự chạy hai lần; nó chỉ tạo ra hai ngữ cảnh cùng quay về một điểm trong chương trình người dùng, với hai giá trị `a0` khác nhau.
 
-### 2.5.3. Xử lý lỗi
+### 3.2.3. Xử lý lỗi
 
 Nếu `uvmcopy` thất bại (hết bộ nhớ), `fork()` gọi `freeproc(np)` để trả slot về `UNUSED`, thả `np->lock` và trả `-1`. Lúc này `np->ofile[]` vẫn toàn 0 vì vòng `filedup` chưa chạy, nên không có `ref` nào bị tăng. Nếu `allocproc()` thất bại ngay từ đầu, hàm trả `-1` mà không cần dọn gì.
 
 Một chi tiết nhỏ nhưng quan trọng: `fork()` copy `trace_mask` từ cha sang con (`proc.c:305`). Đây là trường được thêm ở Lab 0 để hỗ trợ system call `trace`; nếu thiếu bước này, tiến trình con sẽ mất trạng thái trace của cha.
 
-## 2.6. Cơ chế định thời: `scheduler()`, `sched()`, `yield()`
+## 3.3. Cơ chế định thời: `scheduler()`, `sched()`, `yield()`
 
-### 2.6.1. `scheduler()`
+### 3.3.1. `scheduler()`
 
 Mỗi CPU sau khi khởi tạo đều gọi `scheduler()` (`proc.c:450`) và không bao giờ quay lại. Vòng lặp của nó:
 
@@ -368,7 +370,7 @@ Việc giữ `p->lock` trong suốt quá trình chọn và chuyển ngữ cảnh
 
 Cơ chế này cũng có chi phí: mỗi lần chọn tiến trình là một lần quét `NPROC = 64` slot, và không có độ ưu tiên. Đổi lại, code rất ngắn và dễ kiểm chứng.
 
-### 2.6.2. `sched()`
+### 3.3.2. `sched()`
 
 `sched()` (`proc.c:497`) là cầu nối giữa kernel thread của tiến trình và `scheduler()`. Trước khi `swtch()`, nó kiểm tra bốn điều kiện bất biến và `panic` nếu vi phạm:
 
@@ -381,7 +383,7 @@ Sau đó `sched()` lưu `intena` (trạng thái interrupt trước đó của ke
 
 Bốn điều kiện trên biến `sched()` thành một "cửa ải" an toàn: mọi đường đi vào scheduler (`yield`, `sleep`, `exit`) đều phải chuẩn bị đúng trạng thái và lock trước khi gọi.
 
-### 2.6.3. `yield()` và preemption
+### 3.3.3. `yield()` và preemption
 
 `yield()` (`proc.c:518`) thực hiện đúng ba việc: `acquire(&p->lock)`, `p->state = RUNNABLE`, `sched()`, rồi `release(&p->lock)` sau khi được chọn lại.
 
@@ -389,7 +391,7 @@ Bốn điều kiện trên biến `sched()` thành một "cửa ải" an toàn: 
 
 Đây cũng là điểm tự nhiên để đếm "số lần được định thời" cho mục 4.2: mỗi khi `scheduler()` đặt `state = RUNNING`, đó là một sự kiện lập lịch. Tuy nhiên cần thống nhất định nghĩa (đếm lúc được chọn chạy, hay đếm lúc nhường CPU) vì hai cách lệch nhau đúng một đơn vị ở thời điểm quan sát.
 
-### 2.6.4. `sleep`, `wakeup`, `exit`, `wait`
+### 3.3.4. `sleep`, `wakeup`, `exit`, `wait`
 
 Bốn hàm này hoàn thiện vòng đời trạng thái:
 
@@ -413,13 +415,13 @@ stateDiagram-v2
   ZOMBIE --> UNUSED : wait gọi freeproc
 ```
 
-### 2.6.5. Nhận xét
+### 3.3.5. Nhận xét
 
 Cơ chế định thời của xv6 tối giản nhưng đầy đủ: không độ ưu tiên, không run queue nhiều mức, mỗi CPU tự quét bảng nên tải có thể lệch giữa các nhân. Tính đúng đắn vẫn được bảo đảm nhờ `p->lock` và các bất biến của `sched()`, và toàn bộ cơ chế chỉ dựa trên một trường `state` cùng một spinlock cho mỗi tiến trình.
 
-# 3. Cài đặt và kiểm thử `sysinfo` (mục 4.2)
+# 4. Cài đặt và kiểm thử `sysinfo` (mục 4.2)
 
-## 3.1. Thiết kế dữ liệu và ABI
+## 4.1. Thiết kế dữ liệu và ABI
 
 `struct sysinfo` được khai báo một lần trong `kernel/sysinfo.h` (`kernel/sysinfo.h:20-45`) và được dùng chung cho cả kernel lẫn chương trình người dùng. Cấu trúc chỉ gồm các mảng tĩnh, không chứa con trỏ, nên có thể copy nguyên khối bằng `copyout()` mà không phụ thuộc địa chỉ kernel.
 
@@ -440,7 +442,7 @@ Các giới hạn được đặt bằng hằng số của kernel: `SYSINFO_MAX_
 
 Về phía người dùng, `user/user.h` khai báo trước `struct sysinfo` và prototype `int sysinfo(struct sysinfo *)` (`user/user.h:2,27`), còn `user/usys.pl` sinh stub `entry("sysinfo")` (`user/usys.pl:40`). Trong kernel, số hiệu là `SYS_sysinfo = 23` (`kernel/syscall.h:24`), được thêm vào bảng dispatch, bảng tên dùng cho `trace`, và prototype (`kernel/syscall.c:105,132,158`). Chương trình `_sysinfotest` được thêm vào `UPROGS` (`Makefile:199`).
 
-## 3.2. Bộ đệm snapshot và đồng bộ
+## 4.2. Bộ đệm snapshot và đồng bộ
 
 `struct sysinfo` có kích thước 32.984 byte, lớn hơn nhiều so với kernel stack 4 KB. Nếu khai báo nó như một biến cục bộ trong `sys_sysinfo()` thì stack sẽ tràn ngay khi system call được gọi. Vì vậy bộ đệm `snapshot` được đặt ở BSS (`kernel/sysproc.c:112`) và được bảo vệ bởi một spinlock riêng `snapshot_lock` (`kernel/sysproc.c:113`). `sysinfoinit()` khởi tạo lock này trong `main()` sau `fileinit()` (`kernel/main.c:30`, `kernel/sysproc.c:117-120`).
 
@@ -452,11 +454,11 @@ Luồng của `sys_sysinfo()` (`kernel/sysproc.c:179-193`):
 4. `copyout()` toàn bộ cấu trúc sang user space.
 5. Thả lock và trả 0, hoặc -1 nếu `copyout()` thất bại.
 
-Việc giữ `snapshot_lock` trong lúc `copyout()` 32 KB là một đánh đổi có chủ ý. Cách này đơn giản, không cần cấp phát động và không thể thất bại vì hết trang; đổi lại, các lời gọi `sysinfo()` bị tuần tự hoá và CPU phải tắt interrupt trong suốt thời gian copy. Với bài lab, chi phí này chấp nhận được; hướng cải thiện được nêu ở mục 3.6.
+Việc giữ `snapshot_lock` trong lúc `copyout()` 32 KB là một đánh đổi có chủ ý. Cách này đơn giản, không cần cấp phát động và không thể thất bại vì hết trang; đổi lại, các lời gọi `sysinfo()` bị tuần tự hoá và CPU phải tắt interrupt trong suốt thời gian copy. Với bài lab, chi phí này chấp nhận được; hướng cải thiện được nêu ở mục 4.6.
 
 Một chi tiết liên quan đến BSS của chương trình người dùng: `user/sysinfotest.c` cũng đặt các snapshot (`si`, `prev`) ở BSS vì user stack chỉ có một trang. Trong cấu hình `LAB_SYSCALL`, `uvmalloc()` bỏ qua `memset(mem, 0, sz)` (`kernel/vm.c:271-273`), nên BSS của user **không được đảm bảo bằng 0**. Vì vậy test tự gán `failures = 0` và luôn gọi `getinfo()` trước khi đọc snapshot, không dựa vào khởi tạo tĩnh.
 
-## 3.3. Thu thập dữ liệu
+## 4.3. Thu thập dữ liệu
 
 Việc thu thập chia làm hai pha, mỗi pha chỉ giữ một loại lock.
 
@@ -472,13 +474,13 @@ Việc thu thập chia làm hai pha, mỗi pha chỉ giữ một loại lock.
 - `p->parent` trên thực tế được bảo vệ bởi `wait_lock`, không phải `p->lock`; đọc dưới `p->lock` chỉ là best-effort nên `parent_pid` có thể là giá trị cũ.
 - `nfile` và `nproc` phản ánh từng bảng tại thời điểm pha tương ứng, không nhất thiết nhất quán tuyệt đối với nhau.
 
-Với mục tiêu quan sát và kiểm thử của lab, các sai lệch này chấp nhận được; chúng được nêu lại ở mục 3.6.
+Với mục tiêu quan sát và kiểm thử của lab, các sai lệch này chấp nhận được; chúng được nêu lại ở mục 4.6.
 
-## 3.4. Đếm số lần được định thời
+## 4.4. Đếm số lần được định thời
 
 `nsched` được thêm vào `struct proc` (`kernel/proc.h:96`), được đặt lại bằng 0 trong `allocproc()` (`kernel/proc.c:127`) và tăng trong `scheduler()` ngay sau khi chuyển trạng thái sang `RUNNING` (`kernel/proc.c:469-470`). Định nghĩa là **số lần scheduler chọn tiến trình**, không phải số lần `yield()` hay số lần ngủ. Việc tăng nằm trong vùng đang giữ `p->lock` của scheduler, nên reader trong `collect()` thấy một giá trị nhất quán. Tiến trình mới có `nsched = 0` cho đến lần chạy đầu tiên; sau đó giá trị luôn dương.
 
-## 3.5. `user/sysinfotest.c` và kết quả
+## 4.5. `user/sysinfotest.c` và kết quả
 
 Chương trình kiểm thử gồm **56 check** và **22 lời gọi `sysinfo()`** (21 lần qua `getinfo()` cộng một lần cố tình truyền con trỏ không hợp lệ). Thay vì so sánh với số tuyệt đối, test lấy một snapshot baseline, thực hiện thao tác rồi so sánh **delta** về `nfile`, `ref`, `npid`, `nfd`... nhờ vậy không phụ thuộc vào số file console/README đang mở trên hệ thống.
 
@@ -514,27 +516,27 @@ PASS: copyout: invalid user pointer is rejected
 ALL TESTS PASSED
 ```
 
-Nhóm chạy `make clean && make qemu`, sau đó chạy `sysinfotest` **ba lần liên tiếp**; cả ba lần đều cho 56 PASS, 0 FAIL và `ALL TESTS PASSED`. Kích thước 32.984 byte khớp với tính toán ở mục 3.1.
+Nhóm chạy `make clean && make qemu`, sau đó chạy `sysinfotest` **ba lần liên tiếp**; cả ba lần đều cho 56 PASS, 0 FAIL và `ALL TESTS PASSED`. Kích thước 32.984 byte khớp với tính toán ở mục 4.1.
 
-## 3.6. Hạn chế và hướng cải thiện
+## 4.6. Hạn chế và hướng cải thiện
 
-- **Snapshot không nguyên tử.** Như đã phân tích ở mục 3.3, `fileptr[]` có thể bị lệch nếu slot file được tái sử dụng giữa hai pha, và `parent_pid` có thể là giá trị cũ. Muốn chính xác tuyệt đối cần một cơ chế generation counter hoặc giữ `ftable.lock` xuyên suốt (không khả thi vì sẽ tạo chu trình lock với `fork()`).
+- **Snapshot không nguyên tử.** Như đã phân tích ở mục 4.3, `fileptr[]` có thể bị lệch nếu slot file được tái sử dụng giữa hai pha, và `parent_pid` có thể là giá trị cũ. Muốn chính xác tuyệt đối cần một cơ chế generation counter hoặc giữ `ftable.lock` xuyên suốt (không khả thi vì sẽ tạo chu trình lock với `fork()`).
 - **Giữ spinlock trong lúc `copyout()`.** Cách hiện tại làm tăng độ trễ và tắt interrupt trên CPU trong thời gian copy 32 KB. Có thể cải thiện bằng buffer cấp phát động (`kalloc()` nhiều trang), double buffer hoặc seqlock; đổi lại code phức tạp hơn và phải xử lý trường hợp hết bộ nhớ.
 - **Mảng cố định.** Kích thước `files[100]`, `procs[64]`, `pids[64]`, `fds[16]` gắn với `NFILE`, `NPROC`, `NOFILE`. Nếu đổi các hằng số này phải cập nhật header và rebuild cả kernel lẫn user; bản thân cấu trúc cũng khá lớn (32 KB) nên không phù hợp nếu gọi `sysinfo()` với tần suất cao.
 - **ABI phụ thuộc phiên bản.** `state` và `type` được copy dưới dạng `int`; giá trị số khớp với enum của cùng một bản build, nhưng không phải ABI ổn định giữa các phiên bản xv6 khác nhau.
 - **Chi phí so khớp.** Pha 2 so từng fd với từng entry file, trường hợp xấu nhất khoảng `NPROC × NOFILE × NFILE = 64 × 16 × 100 = 102.400` phép so sánh. Với các hằng số hiện tại, chi phí này chấp nhận được; nếu bảng lớn hơn nên dùng bảng băm theo địa chỉ `struct file *`.
 - **Môi trường kiểm thử.** Kết quả chỉ đo trên QEMU với 3 CPU ảo, chưa có stress test nhiều tiến trình mở/đóng file đồng thời. Các race đã nêu sẽ khó tái hiện hơn trên cấu hình nhỏ này.
 
-# 4. Giới hạn
+# 5. Giới hạn
 
-Phần 4.1 dựa trên **đọc mã nguồn tĩnh**; các kết luận về `ref`, chia sẻ `off` và thứ tự cấp fd đã được kiểm chứng một phần bằng `user/sysinfotest.c` ở mục 3.5. Phần 4.2 có thực nghiệm nhưng chỉ trên QEMU với 3 CPU ảo, chưa đo tải cao hoặc nhiều CPU thật.
+Phần 4.1 dựa trên **đọc mã nguồn tĩnh**; các kết luận về `ref`, chia sẻ `off` và thứ tự cấp fd đã được kiểm chứng một phần bằng `user/sysinfotest.c` ở mục 4.5. Phần 4.2 có thực nghiệm nhưng chỉ trên QEMU với 3 CPU ảo, chưa đo tải cao hoặc nhiều CPU thật.
 
-Các phần sau không nằm trong phạm vi: lớp log và buffer cache (`log.c`, `bio.c`), cấu trúc ba tầng gián tiếp của inode (`addrs[]`, `NDIRECT`) cùng cách `readi`/`writei` ánh xạ offset, chi tiết bên trong `struct pipe`, và hành vi đồng thời thực sự trên nhiều CPU. Số dòng trích dẫn đã cập nhật theo cây mã nguồn **sau khi thêm `sysinfo`**; nếu code dịch chuyển, nên đối chiếu lại theo tên hàm. Các giới hạn `NOFILE = 16`, `NFILE = 100`, `NPROC = 64` là hằng số biên dịch, nên đổi giá trị chỉ làm đổi kích thước bảng và chi phí quét, không đổi logic. Ngoài ra, snapshot của `sysinfo` là best-effort và có các race đã nêu ở mục 3.6.
+Các phần sau không nằm trong phạm vi: lớp log và buffer cache (`log.c`, `bio.c`), cấu trúc ba tầng gián tiếp của inode (`addrs[]`, `NDIRECT`) cùng cách `readi`/`writei` ánh xạ offset, chi tiết bên trong `struct pipe`, và hành vi đồng thời thực sự trên nhiều CPU. Số dòng trích dẫn đã cập nhật theo cây mã nguồn **sau khi thêm `sysinfo`**; nếu code dịch chuyển, nên đối chiếu lại theo tên hàm. Các giới hạn `NOFILE = 16`, `NFILE = 100`, `NPROC = 64` là hằng số biên dịch, nên đổi giá trị chỉ làm đổi kích thước bảng và chi phí quét, không đổi logic. Ngoài ra, snapshot của `sysinfo` là best-effort và có các race đã nêu ở mục 4.6.
 
-# 5. Kết luận
+# 6. Kết luận
 
 Phần khảo sát cho thấy xv6 tách biệt ba tầng: file descriptor (chỉ số trong `ofile[]`), open file description (`struct file` trong `ftable`) và inode. Sự tách biệt này lý giải ngữ nghĩa chia sẻ offset của `dup`/`fork` và tính độc lập của nhiều lần `open` trên cùng một file.
 
 Ở phía tiến trình, `pid`, `state` và `context` phối hợp để scheduler chuyển ngữ cảnh an toàn: `state` quyết định việc được chọn, `context` đủ để lưu kernel thread, còn `trapframe` đủ để quay về user space. Đây cũng là cơ sở để cài đặt `sysinfo`: đọc `ftable.file[]`, đọc `ofile[]` của từng tiến trình và đọc `pid`/`state`/`parent` dưới đúng lock.
 
-Phần 4.2 đã hiện thực system call `sysinfo` với ABI không con trỏ, bộ đệm BSS 32.984 byte và hai pha thu thập dữ liệu không giữ đồng thời `ftable.lock` và `p->lock`. Chương trình `user/sysinfotest.c` kiểm tra 56 tình huống thuộc các nhóm console/inode/pipe, `open`/`dup`/`fork`/`wait`, `ZOMBIE`/`SLEEPING`, giới hạn `NOFILE`, `nsched` và kiểm tra con trỏ user không hợp lệ; cả ba lần chạy trên QEMU đều cho 56 PASS, 0 FAIL. Hạn chế chính là snapshot best-effort (có thể lệch nếu bảng thay đổi giữa hai pha) và việc giữ spinlock trong lúc `copyout()`; các hướng cải thiện đã được nêu ở mục 3.6.
+Phần 4.2 đã hiện thực system call `sysinfo` với ABI không con trỏ, bộ đệm BSS 32.984 byte và hai pha thu thập dữ liệu không giữ đồng thời `ftable.lock` và `p->lock`. Chương trình `user/sysinfotest.c` kiểm tra 56 tình huống thuộc các nhóm console/inode/pipe, `open`/`dup`/`fork`/`wait`, `ZOMBIE`/`SLEEPING`, giới hạn `NOFILE`, `nsched` và kiểm tra con trỏ user không hợp lệ; cả ba lần chạy trên QEMU đều cho 56 PASS, 0 FAIL. Hạn chế chính là snapshot best-effort (có thể lệch nếu bảng thay đổi giữa hai pha) và việc giữ spinlock trong lúc `copyout()`; các hướng cải thiện đã được nêu ở mục 4.6.
