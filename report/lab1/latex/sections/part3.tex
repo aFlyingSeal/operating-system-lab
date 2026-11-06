@@ -1,0 +1,153 @@
+\chapter{Quản lý tiến trình}
+
+\newpage
+
+\section{Các trường \texttt{pid}, \texttt{state}, \texttt{context} và \texttt{struct proc}}
+
+\subsection{\texttt{pid} và \texttt{state}}
+
+\texttt{pid} là định danh duy nhất của tiến trình, được cấp trong \texttt{allocproc()} (\texttt{proc.c:110}) và được dùng bởi \texttt{getpid}, \texttt{kill}, \texttt{wait}, cũng như để cha nhận diện con sau \texttt{fork}. \texttt{struct proc} còn lưu \texttt{parent} – con trỏ tới tiến trình cha – nhưng trường này được bảo vệ bởi \texttt{wait\_lock} chứ không phải \texttt{p->lock}, vì \texttt{wait()} quét toàn bảng để tìm con.
+
+\texttt{state} có kiểu \texttt{enum procstate} với sáu giá trị (\texttt{proc.h:82}). Bảng dưới đây tóm tắt ai đặt trạng thái nào:
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|l|p{4.5cm}|p{7.5cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Trạng thái} & \textbf{Ý nghĩa} & \textbf{Nơi đặt} \\ \hline
+        \texttt{UNUSED} & Slot chưa được dùng & \texttt{freeproc()} khi \texttt{wait()} dọn con \\ \hline
+        \texttt{USED} & Đã cấp phát nhưng chưa sẵn sàng chạy & \texttt{allocproc()} \\ \hline
+        \texttt{RUNNABLE} & Sẵn sàng, đang chờ CPU & \texttt{fork()}, \texttt{userinit()}, \texttt{yield()}, \texttt{wakeup()}, \texttt{kill()} (nếu nạn nhân đang ngủ) \\ \hline
+        \texttt{RUNNING} & Đang chạy trên một CPU & \texttt{scheduler()} khi chọn được tiến trình \\ \hline
+        \texttt{SLEEPING} & Đang ngủ trên một kênh chờ & \texttt{sleep()} \\ \hline
+        \texttt{ZOMBIE} & Đã thoát, chờ cha \texttt{wait()} & \texttt{exit()} \\ \hline
+    \end{tabular}
+    \caption{Các trạng thái của tiến trình trong \texttt{struct proc}}
+\end{table}
+
+Tiến trình \texttt{ZOMBIE} vẫn chiếm slot và giữ \texttt{pid} nhưng không chạy được; chỉ khi cha gọi \texttt{wait()} thì \texttt{freeproc()} mới đưa nó về \texttt{UNUSED}. Vì vậy tiến trình không được \texttt{wait} sẽ thành zombie.
+
+\subsection{\texttt{context} và \texttt{trapframe}: hai loại ngữ cảnh khác nhau}
+
+Đây là điểm dễ nhầm nhất trong \texttt{struct proc}. xv6 lưu \textbf{hai} ngữ cảnh riêng biệt:
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|p{3cm}|p{5cm}|p{6cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Tiêu chí} & \textbf{\texttt{struct context}} & \textbf{\texttt{struct trapframe}} \\ \hline
+        Mục đích & Chuyển ngữ cảnh \textbf{kernel $\rightarrow$ kernel} & Lưu trạng thái khi \textbf{user $\rightarrow$ kernel} và ngược lại \\ \hline
+        Nội dung & \texttt{ra}, \texttt{sp}, \texttt{s0}–\texttt{s11} (14 thanh ghi) & Toàn bộ thanh ghi user, \texttt{epc}, \texttt{kernel\_satp}, \texttt{kernel\_sp}, \texttt{kernel\_trap}, \texttt{kernel\_hartid} \\ \hline
+        Ai lưu/khôi phục & \texttt{swtch()} trong \texttt{kernel/swtch.S} & \texttt{uservec}/\texttt{userret} trong \texttt{kernel/trampoline.S} \\ \hline
+        Vị trí & Nằm trong \texttt{struct proc} (và trong \texttt{struct cpu}) & Nằm ở một trang riêng, được ánh xạ vào page table của tiến trình \\ \hline
+        Khi nào dùng & Mỗi lần scheduler đổi tiến trình & Mỗi lần vào/ra kernel \\ \hline
+    \end{tabular}
+    \caption{So sánh giữa \texttt{struct context} và \texttt{struct trapframe}}
+\end{table}
+
+Vì sao \texttt{context} chỉ cần 14 thanh ghi? Vì \texttt{swtch()} là một lời gọi hàm C bình thường. Theo quy ước gọi hàm của RISC-V, các thanh ghi \textbf{caller-saved} (\texttt{a0}–\texttt{a7}, \texttt{t0}–\texttt{t6}) đã được trình biên dịch tự động lưu vào stack của kernel thread trước khi gọi \texttt{swtch()}. Chỉ các thanh ghi \textbf{callee-saved} (\texttt{s0}–\texttt{s11}), \texttt{ra} và \texttt{sp} là cần được lưu tường minh, vì chúng phải giữ nguyên giá trị qua lời gọi. Nhờ vậy \texttt{swtch()} chỉ cần vài chục lệnh load/store, rất rẻ so với việc lưu toàn bộ thanh ghi.
+
+\texttt{trapframe} thì khác: nó chứa \textbf{toàn bộ} trạng thái của chương trình người dùng tại thời điểm trap, kể cả \texttt{epc} (địa chỉ lệnh bị ngắt) và các thanh ghi \texttt{a0}–\texttt{a7}. Khi system call trả về, \texttt{syscall()} đã ghi kết quả vào \texttt{p->trapframe->a0}; \texttt{usertrapret()} và \texttt{userret} khôi phục toàn bộ thanh ghi từ trapframe rồi \texttt{sret} về user space.
+
+\texttt{struct cpu} (\texttt{proc.h:22}) cũng có một \texttt{struct context} riêng. Đó là ngữ cảnh của \textbf{kernel thread điều phối} trên CPU đó: khi \texttt{swtch(\&c->context, \&p->context)} được gọi, ngữ cảnh của scheduler được lưu vào \texttt{c->context}, còn ngữ cảnh của tiến trình được nạp từ \texttt{p->context}. Nhờ vậy mỗi CPU có thể quay lại đúng vòng lặp \texttt{scheduler()} sau khi tiến trình nhường CPU.
+
+\subsection{Đồng bộ hóa}
+
+\texttt{struct proc} có một spinlock riêng \texttt{p->lock}. Các trường \texttt{state}, \texttt{pid}, \texttt{chan}, \texttt{killed}, \texttt{xstate} phải được đọc/ghi khi giữ lock này. Riêng \texttt{parent} được bảo vệ bởi \texttt{wait\_lock} toàn cục, vì \texttt{wait()} cần quét nhất quán quan hệ cha–con trong khi \texttt{fork()} và \texttt{exit()} có thể thay đổi nó.
+
+Các trường còn lại như \texttt{ofile[]}, \texttt{cwd}, \texttt{sz}, \texttt{pagetable}, \texttt{trapframe}, \texttt{name} là \textbf{riêng của tiến trình}: chỉ chính tiến trình đó sửa, nên không cần \texttt{p->lock}. Đây là lý do \texttt{fork()} có thể đọc \texttt{p->ofile[i]} mà không cần giữ lock của cha. Tuy nhiên, khi một tiến trình khác (ví dụ system call \texttt{sysinfo} ở mục 4.2) muốn đọc \texttt{ofile[]} của tiến trình khác, nó phải cẩn thận với thứ tự lock để tránh deadlock.
+
+\section{Luồng \texttt{syscall fork}}
+
+\subsection{Các bước thực hiện}
+
+\texttt{sys\_fork()} (\texttt{kernel/sysproc.c:26}) chỉ đơn giản gọi \texttt{fork()} trong \texttt{kernel/proc.c:282}. Luồng chính:
+
+\begin{enumerate}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \textbf{\texttt{allocproc()}} (\texttt{proc.c:110}): quét bảng \texttt{proc} tìm slot \texttt{UNUSED}, đặt \texttt{state = USED}, cấp \texttt{pid}, cấp một trang \texttt{trapframe}, tạo page table rỗng, và khởi tạo \texttt{context} với \texttt{ra = forkret}, \texttt{sp = kstack + PGSIZE}. Hàm trả về với \texttt{p->lock} \textbf{đang được giữ}.
+    \item \textbf{\texttt{uvmcopy()}}: copy toàn bộ vùng nhớ người dùng của cha sang con. xv6 bản này \textbf{copy eager}, không dùng copy-on-write.
+    \item \textbf{Copy trapframe}: \texttt{*(np->trapframe) = *(p->trapframe)}, sau đó đặt \texttt{np->trapframe->a0 = 0}. Đây là chi tiết khiến \texttt{fork()} trả về 0 ở tiến trình con.
+    \item \textbf{Kế thừa file}: với mỗi \texttt{i} mà \texttt{p->ofile[i] != 0}, gán \texttt{np->ofile[i] = filedup(p->ofile[i])}. Nhờ đó con có cùng số fd và cùng open file description với cha.
+    \item \textbf{Kế thừa thư mục hiện tại}: \texttt{np->cwd = idup(p->cwd)}.
+    \item \textbf{Gán cha}: \texttt{acquire(\&wait\_lock); np->parent = p; release(\&wait\_lock)}. Việc dùng \texttt{wait\_lock} thay vì \texttt{p->lock} giúp \texttt{wait()} quét bảng mà không phải xen kẽ hai loại lock.
+    \item \textbf{Đặt \texttt{RUNNABLE}} dưới \texttt{np->lock}, rồi trả \texttt{pid} cho cha.
+\end{enumerate}
+
+\subsection{Vì sao \texttt{fork} "trả về hai lần"}
+
+Trong cùng một lời gọi \texttt{fork()}, có hai luồng thực thi tiếp tục từ hai kernel stack khác nhau:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \textbf{Cha} tiếp tục ngay trong hàm \texttt{fork()}, nhận \texttt{pid} của con và trả về user space qua đường \texttt{usertrapret()} thông thường.
+    \item \textbf{Con} chưa từng chạy trong \texttt{fork()}. Khi scheduler chọn nó, \texttt{swtch()} nạp \texttt{p->context} có \texttt{ra = forkret}, nên luồng thực thi bắt đầu tại \texttt{forkret()} (\texttt{proc.c:530}). Hàm này thả \texttt{np->lock} (lần đầu tiên còn gọi \texttt{fsinit}), rồi gọi \texttt{usertrapret()} để quay về user space. Vì \texttt{trapframe} của con là bản copy của cha với \texttt{a0 = 0}, lệnh \texttt{ecall} của con "trả về" giá trị 0.
+\end{itemize}
+
+Nói cách khác, \texttt{fork()} không thực sự chạy hai lần; nó chỉ tạo ra hai ngữ cảnh cùng quay về một điểm trong chương trình người dùng, với hai giá trị \texttt{a0} khác nhau.
+
+\subsection{Xử lý lỗi}
+
+Nếu \texttt{uvmcopy} thất bại (hết bộ nhớ), \texttt{fork()} gọi \texttt{freeproc(np)} để trả slot về \texttt{UNUSED}, thả \texttt{np->lock} và trả \texttt{-1}. Lúc này \texttt{np->ofile[]} vẫn toàn 0 vì vòng \texttt{filedup} chưa chạy, nên không có \texttt{ref} nào bị tăng. Nếu \texttt{allocproc()} thất bại ngay từ đầu, hàm trả \texttt{-1} mà không cần dọn gì.
+
+Một chi tiết nhỏ nhưng quan trọng: \texttt{fork()} copy \texttt{trace\_mask} từ cha sang con (\texttt{proc.c:305}). Đây là trường được thêm ở Lab 0 để hỗ trợ system call \texttt{trace}; nếu thiếu bước này, tiến trình con sẽ mất trạng thái trace của cha.
+
+\section{Cơ chế định thời: \texttt{scheduler()}, \texttt{sched()}, \texttt{yield()}}
+
+\subsection{\texttt{scheduler()}}
+
+Mỗi CPU sau khi khởi tạo đều gọi \texttt{scheduler()} (\texttt{proc.c:450}) và không bao giờ quay lại. Vòng lặp của nó:
+
+\begin{enumerate}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item Bật interrupt (\texttt{intr\_on()}) để tránh deadlock khi mọi tiến trình đang ngủ.
+    \item Quét tuần tự toàn bộ \texttt{proc[0..NPROC-1]}, với mỗi slot thì \texttt{acquire(\&p->lock)}.
+    \item Nếu \texttt{p->state == RUNNABLE}, đặt \texttt{p->state = RUNNING}, gán \texttt{c->proc = p}, rồi \texttt{swtch(\&c->context, \&p->context)}.
+    \item Khi tiến trình nhường CPU và quay lại \texttt{scheduler()}, \texttt{c->proc} được đặt lại 0 và \texttt{p->lock} được thả.
+    \item Nếu không tìm được tiến trình nào, CPU thực hiện \texttt{wfi} (wait for interrupt) để tiết kiệm năng lượng.
+\end{enumerate}
+
+Việc giữ \texttt{p->lock} trong suốt quá trình chọn và chuyển ngữ cảnh bảo đảm \textbf{một tiến trình không thể được chọn bởi hai CPU cùng lúc}. Đây là lý do xv6 chạy đúng trên máy nhiều nhân dù không có hàng đợi chạy (run queue) phức tạp: toàn bộ bảng \texttt{proc} đóng vai trò hàng đợi, và lock của từng slot là điểm đồng bộ.
+
+Cơ chế này cũng có chi phí: mỗi lần chọn tiến trình là một lần quét \texttt{NPROC = 64} slot, và không có độ ưu tiên. Đổi lại, code rất ngắn và dễ kiểm chứng.
+
+\subsection{\texttt{sched()}}
+
+\texttt{sched()} (\texttt{proc.c:497}) là cầu nối giữa kernel thread của tiến trình và \texttt{scheduler()}. Trước khi \texttt{swtch()}, nó kiểm tra bốn điều kiện bất biến và \texttt{panic} nếu vi phạm:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item Đang giữ \texttt{p->lock}.
+    \item \texttt{mycpu()->noff == 1}, tức chỉ còn đúng một spinlock đang giữ (chính là \texttt{p->lock}).
+    \item \texttt{p->state != RUNNING}, vì tiến trình đã phải đổi trạng thái trước khi nhường CPU.
+    \item Interrupt đang tắt, để tránh bị ngắt giữa lúc đang chuyển ngữ cảnh.
+\end{itemize}
+
+Sau đó \texttt{sched()} lưu \texttt{intena} (trạng thái interrupt trước đó của kernel thread), gọi \texttt{swtch(\&p->context, \&mycpu()->context)}, rồi khôi phục \texttt{intena} khi được scheduler chọn lại. Việc lưu/khôi phục này cần thiết vì \texttt{intena} thuộc về kernel thread chứ không thuộc về CPU.
+
+Bốn điều kiện trên biến \texttt{sched()} thành một "cửa ải" an toàn: mọi đường đi vào scheduler (\texttt{yield}, \texttt{sleep}, \texttt{exit}) đều phải chuẩn bị đúng trạng thái và lock trước khi gọi.
+
+\subsection{\texttt{yield()} và preemption}
+
+\texttt{yield()} (\texttt{proc.c:518}) thực hiện đúng ba việc: \texttt{acquire(\&p->lock)}, \texttt{p->state = RUNNABLE}, \texttt{sched()}, rồi \texttt{release(\&p->lock)} sau khi được chọn lại.
+
+\texttt{yield()} được gọi từ trap handler khi có \textbf{timer interrupt}: \texttt{trap.c:81} trong \texttt{usertrap()} và \texttt{trap.c:155} trong \texttt{kerneltrap()}. Nhờ vậy xv6 có định thời \textbf{preemptive round-robin}: sau mỗi chu kỳ timer, tiến trình đang chạy bị đưa về \texttt{RUNNABLE} và nhường CPU cho tiến trình kế tiếp trong bảng. Nếu không có timer interrupt, một vòng lặp vô hạn trong user space sẽ chiếm CPU mãi mãi.
+
+Đây cũng là điểm tự nhiên để đếm "số lần được định thời" cho mục 4.2: mỗi khi \texttt{scheduler()} đặt \texttt{state = RUNNING}, đó là một sự kiện lập lịch. Tuy nhiên cần thống nhất định nghĩa (đếm lúc được chọn chạy, hay đếm lúc nhường CPU) vì hai cách lệch nhau đúng một đơn vị ở thời điểm quan sát.
+
+\subsection{\texttt{sleep}, \texttt{wakeup}, \texttt{exit}, \texttt{wait}}
+
+Bốn hàm này hoàn thiện vòng đời trạng thái:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{sleep(chan, lk)} (\texttt{proc.c:554}): giữ \texttt{p->lock}, thả \texttt{lk}, gán \texttt{p->chan = chan}, đặt \texttt{SLEEPING}, gọi \texttt{sched()}. Khi được đánh thức, nó xoá \texttt{chan}, thả \texttt{p->lock} và lấy lại \texttt{lk}. Thứ tự này bảo đảm không mất tín hiệu \texttt{wakeup} giữa lúc kiểm tra điều kiện và lúc ngủ.
+    \item \texttt{wakeup(chan)} (\texttt{proc.c:585}): quét bảng, với mỗi tiến trình \texttt{SLEEPING} có \texttt{p->chan == chan} thì đặt \texttt{RUNNABLE}.
+    \item \texttt{exit(status)} (\texttt{proc.c:352}): đóng toàn bộ \texttt{ofile[]}, \texttt{iput(cwd)}, chuyển con cho \texttt{init}, đánh thức cha, đặt \texttt{ZOMBIE}, rồi \texttt{sched()} và không bao giờ quay lại.
+    \item \texttt{wait(addr)} (\texttt{proc.c:396}): quét con, nếu có con \texttt{ZOMBIE} thì copy \texttt{xstate} ra user space, gọi \texttt{freeproc()} (đưa về \texttt{UNUSED}) và trả \texttt{pid}. Nếu chưa có con nào thoát, nó \texttt{sleep(p, \&wait\_lock)}.
+\end{itemize}
+
+\subsection{Nhận xét}
+
+Cơ chế định thời của xv6 tối giản nhưng đầy đủ: không độ ưu tiên, không run queue nhiều mức, mỗi CPU tự quét bảng nên tải có thể lệch giữa các nhân. Tính đúng đắn vẫn được bảo đảm nhờ \texttt{p->lock} và các bất biến của \texttt{sched()}, và toàn bộ cơ chế chỉ dựa trên một trường \texttt{state} cùng một spinlock cho mỗi tiến trình.

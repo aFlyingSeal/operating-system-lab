@@ -1,0 +1,9 @@
+\chapter{Kết Luận}
+
+\newpage
+
+Phần khảo sát cho thấy xv6 tách biệt ba tầng: file descriptor (chỉ số trong `ofile[]`), open file description (`struct file` trong `ftable`) và inode. Sự tách biệt này lý giải ngữ nghĩa chia sẻ offset của `dup`/`fork` và tính độc lập của nhiều lần `open` trên cùng một file.
+
+Ở phía tiến trình, `pid`, `state` và `context` phối hợp để scheduler chuyển ngữ cảnh an toàn: `state` quyết định việc được chọn, `context` đủ để lưu kernel thread, còn `trapframe` đủ để quay về user space. Đây cũng là cơ sở để cài đặt `sysinfo`: đọc `ftable.file[]`, đọc `ofile[]` của từng tiến trình và đọc `pid`/`state`/`parent` dưới đúng lock.
+
+Phần 4.2 đã hiện thực system call `sysinfo` với ABI không con trỏ, bộ đệm BSS 32.984 byte và hai pha thu thập dữ liệu không giữ đồng thời `ftable.lock` và `p->lock`. Chương trình `user/sysinfotest.c` kiểm tra 56 tình huống thuộc các nhóm console/inode/pipe, `open`/`dup`/`fork`/`wait`, `ZOMBIE`/`SLEEPING`, giới hạn `NOFILE`, `nsched` và kiểm tra con trỏ user không hợp lệ; cả ba lần chạy trên QEMU đều cho 56 PASS, 0 FAIL. Hạn chế chính là snapshot best-effort (có thể lệch nếu bảng thay đổi giữa hai pha) và việc giữ spinlock trong lúc `copyout()`; các hướng cải thiện đã được nêu ở mục 4.6.
