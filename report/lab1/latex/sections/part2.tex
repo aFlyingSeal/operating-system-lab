@@ -1,0 +1,162 @@
+\chapter{Quản lý file}
+
+\newpage
+
+\section{Hai tầng quản lý file: \texttt{ofile[]} và \texttt{ftable.file[]}}
+
+\subsection{File descriptor là chỉ số, không phải file}
+
+Mỗi tiến trình sở hữu một mảng \texttt{ofile[]} nằm ngay trong \texttt{struct proc} (\texttt{kernel/proc.h:107}), với kích thước \texttt{NOFILE = 16} (\texttt{kernel/param.h:3}). Phần tử \texttt{ofile[fd]} là một con trỏ tới \texttt{struct file}, hoặc bằng 0 nếu descriptor đó chưa được dùng. Như vậy \textbf{file descriptor chỉ là một số nguyên nhỏ, đóng vai trò chỉ số} vào bảng riêng của tiến trình; bản thân nó không chứa thông tin gì về file.
+
+Điều này giải thích vì sao mọi system call nhận file descriptor (\texttt{read}, \texttt{write}, \texttt{close}, \texttt{dup}, \texttt{fstat}...) đều phải đi qua bước kiểm tra \texttt{argfd()} (\texttt{kernel/sysfile.c:22}): hàm này kiểm tra \texttt{fd} nằm trong khoảng \texttt{[0, NOFILE)} và \texttt{ofile[fd]} khác 0, rồi mới trả về con trỏ \texttt{struct file} tương ứng. Một \texttt{fd} âm, quá lớn, hoặc đã bị \texttt{close} đều bị từ chối ngay tại đây.
+
+\subsection{\texttt{ftable} và \texttt{structfile}}
+
+Ở tầng thứ hai, toàn hệ thống có đúng một bảng \texttt{ftable} (\texttt{kernel/file.c:18-21}). Điểm cần lưu ý về mặt cú pháp: \texttt{ftable} là \textbf{một biến toàn cục} có kiểu struct không tên, chứ không phải một kiểu tên là \texttt{struct ftable}. Đề bài viết "\texttt{file[]} của \texttt{struct ftable}" là cách gọi theo nghĩa chức năng; trong mã nguồn không tồn tại \texttt{struct ftable}.
+
+\begin{codebox}[1]{\texttt{struct ftable}}
+    \begin{minted}{c}
+    struct {
+        struct spinlock lock;
+        struct file file[NFILE];
+    } ftable;
+    \end{minted}
+\end{codebox}
+
+\texttt{NFILE = 100} (\texttt{kernel/param.h:4}), tức tối đa 100 open file trên toàn hệ thống, trong khi mỗi tiến trình chỉ được mở tối đa 16. Hai giới hạn này độc lập: một tiến trình có thể chạm \texttt{NOFILE} trước, hoặc cả hệ thống chạm \texttt{NFILE} trước, tùy tình huống.
+
+\texttt{struct file} (\texttt{kernel/file.h:1-10}) là \textbf{open file description} - đối tượng trung tâm của mọi thao tác đọc/ghi:
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{|l|p{12cm}|}
+\hline
+\rowcolor[rgb]{0.8, 0.9, 1.0}
+\textbf{Trường} & \textbf{Ý nghĩa} \\ \hline
+\texttt{type} & Một trong \texttt{FD\_NONE}, \texttt{FD\_PIPE}, \texttt{FD\_INODE}, \texttt{FD\_DEVICE} \\ \hline
+\texttt{ref} & Số tham chiếu đang trỏ tới open file này \\ \hline
+\texttt{readable} & Có được đọc hay không, suy ra từ \texttt{omode} lúc \texttt{open} \\ \hline
+\texttt{writable} & Có được ghi hay không, suy ra từ \texttt{omode} lúc \texttt{open} \\ \hline
+\texttt{pipe} & Con trỏ tới \texttt{struct pipe} khi \texttt{type == FD\_PIPE} \\ \hline
+\texttt{ip} & Con trỏ tới inode khi \texttt{type == FD\_INODE} hoặc \texttt{FD\_DEVICE} \\ \hline
+\texttt{off} & Offset hiện tại, chỉ dùng cho \texttt{FD\_INODE} \\ \hline
+\texttt{major} & Số hiệu thiết bị chính, chỉ dùng cho \texttt{FD\_DEVICE} \\ \hline
+\end{tabular}
+\caption{Các trường trong cấu trúc quản lý file}
+\end{table}
+
+Đề bài nhắc tới "mode" của file. Trong xv6 \textbf{không có trường \texttt{mode} nguyên vẹn} được lưu lại; thay vào đó \texttt{sys\_open} chuyển \texttt{omode} thành hai cờ boolean \texttt{readable} và \texttt{writable}, và hai cờ này được kiểm tra lại trong \texttt{fileread()}/\texttt{filewrite()} trước khi thực hiện thao tác. Cách biểu diễn này đủ cho xv6 vì kernel không cần phân biệt \texttt{O\_RDONLY} với \texttt{O\_RDWR} sau khi đã mở.
+
+Một điểm tinh tế: \texttt{ref} đếm \textbf{số tham chiếu từ các file descriptor}, không phải số tiến trình. Nếu một tiến trình gọi \texttt{dup()} ba lần trên cùng một fd, \texttt{ref} tăng thêm ba dù chỉ có một tiến trình. Hệ quả này rất quan trọng khi cài đặt \texttt{sysinfo} ở mục 4.2: khi liệt kê "các tiến trình đang tham chiếu tới open file", một tiến trình có thể xuất hiện một lần nhưng đóng góp nhiều đơn vị vào \texttt{ref}.
+
+\subsection{Vòng đời của \texttt{ref}}
+
+Ba hàm trong \texttt{kernel/file.c} quản lý \texttt{ref}, tất cả đều thao tác dưới \texttt{ftable.lock}:
+
+\begin{itemize}[topsep=0pt, itemsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{filealloc()} (\texttt{file.c:56}) quét tuần tự \texttt{ftable.file[]}, chọn phần tử đầu tiên có \texttt{ref == 0}, đặt \texttt{ref = 1} rồi trả về. Nếu hết slot, trả 0. Hàm \textbf{không} khởi tạo các trường còn lại; \texttt{sys\_open} chịu trách nhiệm gán \texttt{type}, \texttt{ip}, \texttt{off}, \texttt{readable}, \texttt{writable} sau đó.
+    \item \texttt{filedup(f)} (\texttt{file.c:74}) tăng \texttt{ref} thêm 1, \texttt{panic} nếu \texttt{ref < 1}. Đây là thao tác "chia sẻ" một open file đã tồn tại.
+    \item \texttt{fileclose(f)} (\texttt{file.c:86}) giảm \texttt{ref}. Nếu vẫn còn lớn hơn 0 thì chỉ trả về. Khi \texttt{ref} về 0, hàm \textbf{sao toàn bộ \texttt{struct file} ra biến cục bộ \texttt{ff}}, đặt \texttt{type = FD\_NONE}, rồi \textbf{thả \texttt{ftable.lock} trước khi} gọi \texttt{pipeclose()} hoặc \texttt{iput()}. Việc thả lock sớm là cố ý: \texttt{iput()} có thể phải chờ đĩa và đi ngủ, không được giữ spinlock trong lúc đó.
+\end{itemize}
+
+Như vậy một slot trong \texttt{ftable} được coi là tự do khi \texttt{ref == 0} (và \texttt{type == FD\_NONE}). Đây cũng là tiêu chí để đếm "số open file toàn hệ thống" ở mục 4.2: đếm các phần tử có \texttt{ref > 0} và \texttt{type != FD\_NONE}, không đếm toàn bộ 100 slot.
+
+\section{Luồng \texttt{syscall open}}
+
+\subsection{Từ user space vào kernel}
+
+Một lời gọi \texttt{open()} không đi thẳng vào kernel: prototype nằm trong \texttt{user/user.h}, còn phần thân là stub trong \texttt{user/usys.S} (sinh tự động bởi \texttt{user/usys.pl}). Stub nạp số hiệu system call vào \texttt{a7}, tham số vào \texttt{a0}–\texttt{a5}, rồi thực hiện \texttt{ecall}.
+
+Sau trap, \texttt{usertrap()} gọi \texttt{syscall()} (\texttt{kernel/syscall.c:162}). Hàm này đọc số hiệu từ \texttt{p->trapframe->a7}, tra bảng \texttt{syscalls[num]}, gọi hàm xử lý, rồi ghi kết quả vào \texttt{p->trapframe->a0}. Theo ABI RISC-V, \texttt{a0} là thanh ghi trả về, và \texttt{usertrapret()} khôi phục nó cho chương trình người dùng.
+
+\subsection{Các bước trong \texttt{sys\_open}}
+
+\texttt{sys\_open()} nằm ở \texttt{kernel/sysfile.c:305}. Luồng chính gồm các bước sau:
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{|c|p{7cm}|p{7cm}|}
+\hline
+\rowcolor[rgb]{0.8, 0.9, 1.0}
+\textbf{Bước} & \textbf{Việc làm} & \textbf{Ghi chú} \\ \hline
+1 & \texttt{argint(1, \&omode)}, \texttt{argstr(0, path, MAXPATH)} & Lấy \texttt{omode} và copy path từ user space vào buffer kernel \\ \hline
+2 & \texttt{begin\_op()} & Mở một transaction của lớp log; mọi thao tác file system phải nằm trong cặp \texttt{begin\_op}/\texttt{end\_op} \\ \hline
+3 & Nếu có \texttt{O\_CREATE}: \texttt{create(path, T\_FILE, 0, 0)} & Trả về inode \textbf{đã được khoá} \\ \hline
+4 & Ngược lại: \texttt{namei(path)} rồi \texttt{ilock(ip)} & \texttt{namei} chỉ tìm, chưa khoá; phải khoá để đọc metadata an toàn \\ \hline
+5 & Nếu là \texttt{T\_DIR} và \texttt{omode != O\_RDONLY}: từ chối & Không cho ghi trực tiếp vào thư mục \\ \hline
+6 & Nếu là \texttt{T\_DEVICE}: kiểm tra \texttt{major} trong \texttt{[0, NDEV)} & Tránh gọi driver không tồn tại \\ \hline
+7 & \texttt{filealloc()} rồi \texttt{fdalloc(f)} & Cấp open file description, sau đó cấp slot trong \texttt{ofile[]} \\ \hline
+8 & Gán \texttt{type}, \texttt{ip}, \texttt{off = 0}, \texttt{readable}, \texttt{writable} & Với \texttt{FD\_DEVICE} thì lưu \texttt{major} và không dùng \texttt{off} \\ \hline
+9 & Nếu có \texttt{O\_TRUNC} và là \texttt{T\_FILE}: \texttt{itrunc(ip)} & Cắt file về 0 byte \\ \hline
+10 & \texttt{iunlock(ip)}, \texttt{end\_op()}, trả \texttt{fd} & Kết thúc transaction và trả descriptor \\ \hline
+\end{tabular}
+\caption{Các bước trong luồng \texttt{syscall open}}
+\end{table}
+
+Hai chi tiết đáng chú ý:
+
+\begin{itemize}[topsep=0pt, itemsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{create()} trả về inode đã khoá, còn \texttt{namei()} thì không. Vì vậy nhánh \texttt{O\_CREATE} \textbf{không} gọi \texttt{ilock()} lại, còn nhánh còn lại thì có. Đây là lý do hai nhánh trông không đối xứng trong code.
+    \item \texttt{fdalloc()} (\texttt{kernel/sysfile.c:40}) quét từ \texttt{fd = 0} và chọn slot trống đầu tiên. Nhờ vậy ba descriptor \texttt{0}, \texttt{1}, \texttt{2} trở thành quy ước chuẩn cho stdin/stdout/stderr, và một fd vừa \texttt{close} sẽ được cấp lại cho lần \texttt{open} kế tiếp.
+\end{itemize}
+
+\subsection{Xử lý lỗi}
+
+\texttt{sys\_open} có nhiều nhánh thoát sớm, và mỗi nhánh phải hoàn trả tài nguyên đúng thứ tự:
+
+\begin{itemize}[topsep=0pt, itemsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{argstr}/\texttt{argint} thất bại → trả \texttt{-1} ngay, chưa chiếm tài nguyên.
+    \item \texttt{create}/\texttt{namei} thất bại → \texttt{end\_op()} rồi trả \texttt{-1}.
+    \item Ghi vào thư mục hoặc \texttt{major} không hợp lệ → \texttt{iunlockput(ip)} (mở khoá và giảm \texttt{ref} inode) rồi \texttt{end\_op()}.
+    \item \texttt{filealloc}/\texttt{fdalloc} thất bại → \texttt{fileclose(f)} nếu đã có \texttt{struct file}, rồi \texttt{iunlockput(ip)} và \texttt{end\_op()}.
+\end{itemize}
+
+Trường hợp \texttt{fdalloc} thất bại sau khi \texttt{filealloc} thành công là an toàn: lúc này \texttt{type} vẫn là \texttt{FD\_NONE} và chưa gán \texttt{ip}, nên \texttt{fileclose} chỉ đưa \texttt{ref} về 0 mà không gọi \texttt{iput}/\texttt{pipeclose}.
+
+\section{So sánh file descriptor trong \texttt{open}, \texttt{dup} và \texttt{fork}}
+
+\subsection{Bảng so sánh}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{6pt}
+    \begin{tabular}{|p{4cm}|p{4cm}|p{4cm}|p{4cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Tiêu chí} & \textbf{\texttt{open()}} & \textbf{\texttt{dup(fd)}} & \textbf{\texttt{fork()}} \\ \hline
+        Cấp \texttt{struct file} mới? & Có, qua \texttt{filealloc} & Không, dùng lại của \texttt{fd} & Không, dùng lại của cha \\ \hline
+        Cấp fd mới? & Có, fd trống nhỏ nhất & Có, fd trống nhỏ nhất & Không cấp mới; con có \textbf{cùng số fd} \\ \hline
+        Ảnh hưởng \texttt{ref} & Đặt \texttt{ref = 1} & \texttt{ref} tăng 1 & \texttt{ref} tăng 1 cho \textbf{mỗi} fd được kế thừa \\ \hline
+        Offset \texttt{off} & Riêng (với \texttt{FD\_INODE}, khởi tạo 0) & \textbf{Dùng chung} với \texttt{fd} gốc & \textbf{Dùng chung} với cha \\ \hline
+        Phạm vi ảnh hưởng & Chỉ tiến trình gọi & Chỉ tiến trình gọi & Cha và con \\ \hline
+        Vị trí code & \texttt{sysfile.c:305} & \texttt{sysfile.c:55} & \texttt{proc.c:282} \\ \hline
+    \end{tabular}
+    \caption{So sánh file descriptor trong \texttt{open}, \texttt{dup}, \texttt{fork}}
+\end{table}
+
+Cả ba con đường đều dẫn tới \texttt{ofile[fd]} trỏ vào một \texttt{struct file}, nhưng khác nhau ở chỗ \textbf{open file description được tạo mới hay được chia sẻ}. \texttt{open} tạo mới; \texttt{dup} và \texttt{fork} chia sẻ.
+
+\subsection{Hệ quả thực tế}
+
+Vì \texttt{dup} và \texttt{fork} chia sẻ \texttt{off}, hai descriptor được tạo theo hai cách này sẽ \textbf{nối tiếp nhau} khi đọc/ghi:
+
+- \texttt{dup} rồi đọc lần lượt từ hai fd sẽ thấy dữ liệu nối tiếp, không đọc lại từ đầu.
+- Cha và con sau \texttt{fork} cùng đọc một file sẽ chia nhau các byte, đúng như hành vi của pipeline trong shell.
+- Ngược lại, \texttt{open} cùng một path hai lần tạo ra \textbf{hai open file description độc lập}, mỗi cái có \texttt{off} riêng, dù cả hai cùng trỏ tới một inode trong bộ nhớ.
+
+\texttt{close} cũng cần được hiểu theo mô hình này. \texttt{sys\_close} (\texttt{sysfile.c:98}) chỉ đặt \texttt{ofile[fd] = 0} rồi gọi \texttt{fileclose(f)}. Nếu \texttt{ref} vẫn còn (do \texttt{dup}, \texttt{fork}, hoặc tiến trình khác đang giữ), open file description \textbf{không bị huỷ} và các descriptor còn lại tiếp tục hoạt động bình thường. Chỉ khi \texttt{ref} về 0 thì tài nguyên mới được giải phóng (\texttt{iput} với inode, \texttt{pipeclose} với pipe).
+
+\subsection{Vì sao \texttt{dup} gọi \texttt{fdalloc} trước \texttt{filedup}}
+
+Trong \texttt{sys\_dup} (\texttt{sysfile.c:55}), thứ tự là \texttt{argfd} → \texttt{fdalloc} → \texttt{filedup}. Nếu \texttt{fdalloc} thất bại (bảng \texttt{ofile} đã đầy), hàm trả \texttt{-1} mà \textbf{chưa} tăng \texttt{ref}, nên không có tham chiếu bị rò. Nếu làm ngược lại, mỗi lần \texttt{dup} thất bại sẽ để lại một \texttt{struct file} bị giữ vĩnh viễn - một dạng rò rỉ tài nguyên.
+
+Với \texttt{fork}, thứ tự ngược lại về mặt logic: con đã có bản sao \texttt{ofile[]}, nên với mỗi slot khác 0, \texttt{filedup} được gọi để tăng \texttt{ref} tương ứng. Nếu \texttt{uvmcopy} thất bại trước đó, \texttt{freeproc} sẽ dọn sạch con và không có \texttt{ref} nào bị tăng.
+
+\subsection{Trường hợp pipe}
+
+Với \texttt{FD\_PIPE}, \texttt{struct file} dùng \texttt{f->pipe} thay cho \texttt{ip}/\texttt{off}. \texttt{sys\_pipe} (\texttt{sysfile.c:478}) tạo \textbf{hai} open file description - đầu đọc và đầu ghi - cùng trỏ tới một \texttt{struct pipe}; \texttt{fork} chia sẻ cả hai, nên cha con giao tiếp được qua pipe. Đầu đọc chỉ nhận EOF khi mọi bản sao của đầu ghi đã đóng, vì vậy \texttt{ref} và các cờ \texttt{readopen}/\texttt{writeopen} trong \texttt{struct pipe} đều phải được theo dõi.

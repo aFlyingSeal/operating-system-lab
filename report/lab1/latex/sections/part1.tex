@@ -1,0 +1,32 @@
+\chapter{Mục tiêu và phạm vi}
+
+\newpage
+
+Mục 4.1 yêu cầu tìm hiểu cách xv6 quản lý file và tiến trình, cụ thể là: hai bảng lưu thông tin file (\texttt{ofile[]} của \texttt{struct proc} và \texttt{file[]} của \texttt{ftable}), luồng xử lý của hai system call \texttt{open} và \texttt{fork}, cách dùng file descriptor ở ba con đường \texttt{open}/\texttt{dup}/\texttt{fork}, các trường \text{pid}, \texttt{state}, \texttt{context} của tiến trình, và cơ chế định thời (\texttt{scheduler}, \texttt{sched}, \texttt{yield}).
+
+Mục 4.2 yêu cầu thêm system call \texttt{sysinfo} trả về số open file toàn hệ thống kèm thông tin (type, mode, reference count, danh sách pid đang tham chiếu) và danh sách tiến trình không \texttt{UNUSED} (pid, state, parent pid, số lần được định thời, danh sách fd), cùng chương trình \texttt{user/sysinfotest.c} kiểm thử càng nhiều tình huống càng tốt. Nhóm cài đặt theo hướng snapshot best-effort, không giữ đồng thời \texttt{ftable.lock} và \texttt{p->lock}, và kiểm thử bằng cách so sánh delta giữa các lần gọi thay vì số tuyệt đối.
+
+% Phương pháp thực hiện là \textbf{đọc mã nguồn tĩnh} trong \texttt{xv6-labs-2024} (phiên bản RISC-V của xv6, chạy trên QEMU), đối chiếu với chương 2 và mục 4.3–4.4 của sách xv6. Phần 4.2 được \textbf{thực nghiệm} trên QEMU: build sạch, chạy \texttt{sysinfotest} ba lần liên tiếp, mỗi lần 56 check. Các kết luận về số đếm tham chiếu ở mục 4.1 được kiểm chứng bằng chương trình này.
+
+\vspace{0.5cm}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{|c|p{9.5cm}|c|}
+\hline
+\rowcolor[rgb]{0.8, 0.9, 1.0}
+\textbf{Yêu cầu} & \textbf{Nội dung} & \textbf{Mục tương ứng} \\ \hline
+4.1 & \texttt{ofile[]} của \texttt{struct proc}, \texttt{file[]} của \texttt{ftable} & 2.1 \\ \hline
+4.1 & Luồng \texttt{syscall open} & 2.2 \\ \hline
+4.1 & So sánh file descriptor trong \texttt{open}, \texttt{dup}, \texttt{fork} & 2.3 \\ \hline
+4.1 & \texttt{pid}, \texttt{state}, \texttt{context} của \texttt{struct proc} & 2.4 \\ \hline
+4.1 & Luồng \texttt{syscall fork} & 2.5 \\ \hline
+4.1 & Cơ chế \texttt{scheduler()}, \texttt{sched()}, \texttt{yield()} & 2.6 \\ \hline
+4.2 & Số open file và thông tin từng file & 3.1–3.3 \\ \hline
+4.2 & Danh sách tiến trình và thông tin từng tiến trình & 3.1–3.3 \\ \hline
+4.2 & \texttt{user/sysinfotest.c} và kết quả kiểm thử & 3.5 \\ \hline
+\end{tabular}
+\caption{Phân công và đối chiếu mục nội dung}
+\end{table}

@@ -1,0 +1,136 @@
+\chapter{Cài đặt và kiểm thử \texttt{sysinfo}}
+
+\newpage
+
+\subsection{Thiết kế dữ liệu và ABI}
+
+\texttt{struct sysinfo} được khai báo một lần trong \texttt{kernel/sysinfo.h} (\texttt{kernel/sysinfo.h:20-45}) và được dùng chung cho cả kernel lẫn chương trình người dùng. Cấu trúc chỉ gồm các mảng tĩnh, không chứa con trỏ, nên có thể copy nguyên khối bằng \texttt{copyout()} mà không phụ thuộc địa chỉ kernel.
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|l|l|p{7cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Thành phần} & \textbf{Trường} & \textbf{Ý nghĩa} \\ \hline
+        \multirow{2}{*}{\texttt{struct sysinfo}} & \texttt{nfile}, \texttt{files[100]} & Số open file và thông tin từng open file \\ \cline{2-3}
+        & \texttt{nproc}, \texttt{procs[64]} & Số tiến trình không \texttt{UNUSED} và thông tin từng tiến trình \\ \hline
+        \multirow{4}{*}{\texttt{struct sysinfo\_file}} & \texttt{type} & \texttt{FD\_PIPE}, \texttt{FD\_INODE} hoặc \texttt{FD\_DEVICE} \\ \cline{2-3}
+        & \texttt{readable}, \texttt{writable} & Hai cờ thay cho \texttt{mode}; phản ánh quyền đọc/ghi lúc \texttt{open} \\ \cline{2-3}
+        & \texttt{ref} & Số descriptor đang trỏ tới open file này \\ \cline{2-3}
+        & \texttt{npid}, \texttt{pids[64]} & Số pid hợp lệ và danh sách pid đang tham chiếu, không trùng lặp \\ \hline
+        \multirow{4}{*}{\texttt{struct sysinfo\_proc}} & \texttt{pid}, \texttt{state} & Định danh và trạng thái tại thời điểm chụp \\ \cline{2-3}
+        & \texttt{parent\_pid} & Pid của cha; bằng 0 nếu không có cha (ví dụ \texttt{init}) \\ \cline{2-3}
+        & \texttt{nsched} & Số lần \texttt{scheduler()} đã chọn tiến trình này \\ \cline{2-3}
+        & \texttt{nfd}, \texttt{fds[16]} & Số fd hợp lệ và danh sách chỉ số fd đang mở \\ \hline
+    \end{tabular}
+    \caption{Cấu trúc dữ liệu cho hệ thống thống kê tiến trình và file}
+\end{table}
+
+Các giới hạn được đặt bằng hằng số của kernel: \texttt{SYSINFO\_MAX\_FILES = NFILE = 100}, \texttt{SYSINFO\_MAX\_PROCS = SYSINFO\_MAX\_PIDS = NPROC = 64}, \texttt{SYSINFO\_MAX\_FDS = NOFILE = 16}. Kích thước thực tế là $4 + 100 \times 276 + 4 + 64 \times 84 = 32.984$ byte, khớp với dòng \texttt{sizeof(struct sysinfo) = 32984 bytes} khi chạy thử. \texttt{state} được lưu dưới dạng \texttt{int} thay vì \texttt{enum procstate} để ABI không phụ thuộc vào kiểu enum của từng lần biên dịch; giá trị số vẫn giữ nguyên thứ tự của enum.
+
+Về phía người dùng, \texttt{user/user.h} khai báo trước \texttt{struct sysinfo} và prototype \texttt{int sysinfo(struct sysinfo *)} (\texttt{user/user.h:2,27}), còn \texttt{user/usys.pl} sinh stub \texttt{entry("sysinfo")} (\texttt{user/usys.pl:40}). Trong kernel, số hiệu là \texttt{SYS\_sysinfo = 23} (\texttt{kernel/syscall.h:24}), được thêm vào bảng dispatch, bảng tên dùng cho \texttt{trace}, và prototype (\texttt{kernel/syscall.c:105,132,158}). Chương trình \texttt{\_sysinfotest} được thêm vào \texttt{UPROGS} (\texttt{Makefile:199}).
+
+\subsection{Bộ đệm snapshot và đồng bộ}
+
+\texttt{struct sysinfo} có kích thước 32.984 byte, lớn hơn nhiều so với kernel stack 4 KB. Nếu khai báo nó như một biến cục bộ trong \texttt{sys\_sysinfo()} thì stack sẽ tràn ngay khi system call được gọi. Vì vậy bộ đệm \texttt{snapshot} được đặt ở BSS (\texttt{kernel/sysproc.c:112}) và được bảo vệ bởi một spinlock riêng \texttt{snapshot\_lock} (\texttt{kernel/sysproc.c:113}). \texttt{sysinfoinit()} khởi tạo lock này trong \texttt{main()} sau \texttt{fileinit()} (\texttt{kernel/main.c:30}, \texttt{kernel/sysproc.c:117-120}).
+
+Luồng của \texttt{sys\_sysinfo()} (\texttt{kernel/sysproc.c:179-193}):
+
+\begin{enumerate}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item Lấy địa chỉ user bằng \texttt{argaddr(0, \&addr)}.
+    \item \texttt{acquire(\&snapshot\_lock)} để bảo đảm chỉ một lời gọi dùng bộ đệm chung tại một thời điểm.
+    \item Gọi \texttt{collect(\&snapshot)} để điền dữ liệu.
+    \item \texttt{copyout()} toàn bộ cấu trúc sang user space.
+    \item Thả lock và trả 0, hoặc -1 nếu \texttt{copyout()} thất bại.
+\end{enumerate}
+
+Việc giữ \texttt{snapshot\_lock} trong lúc \texttt{copyout()} 32 KB là một đánh đổi có chủ ý. Cách này đơn giản, không cần cấp phát động và không thể thất bại vì hết trang; đổi lại, các lời gọi \texttt{sysinfo()} bị tuần tự hoá và CPU phải tắt interrupt trong suốt thời gian copy. Với bài lab, chi phí này chấp nhận được; hướng cải thiện được nêu ở mục 4.6.
+
+Một chi tiết liên quan đến BSS của chương trình người dùng: \texttt{user/sysinfotest.c} cũng đặt các snapshot (\texttt{si}, \texttt{prev}) ở BSS vì user stack chỉ có một trang. Trong cấu hình \texttt{LAB\_SYSCALL}, \texttt{uvmalloc()} bỏ qua \texttt{memset(mem, 0, sz)} (\texttt{kernel/vm.c:271-273}), nên BSS của user \textbf{không được đảm bảo bằng 0}. Vì vậy test tự gán \texttt{failures = 0} và luôn gọi \texttt{getinfo()} trước khi đọc snapshot, không dựa vào khởi tạo tĩnh.
+
+\subsection{Thu thập dữ liệu}
+
+Việc thu thập chia làm hai pha, mỗi pha chỉ giữ một loại lock.
+
+\textbf{Pha 1 - bảng open file.} \texttt{filesnapshot()} (\texttt{kernel/file.c:33-52}) giữ \texttt{ftable.lock}, duyệt \texttt{ftable.file[0..NFILE)}, bỏ qua các slot có \texttt{ref == 0} hoặc \texttt{type == FD\_NONE} (slot đang được \texttt{filealloc()} cấp nhưng chưa gán loại), rồi copy \texttt{type}, \texttt{readable}, \texttt{writable}, \texttt{ref}, đặt \texttt{npid = 0} và lưu địa chỉ \texttt{struct file *} vào mảng \texttt{fileptr[]}. Hàm trả về \texttt{nfile} rồi thả \texttt{ftable.lock}. Việc lưu con trỏ chỉ nhằm mục đích so khớp ở pha 2; con trỏ này không được gửi ra user space.
+
+\textbf{Pha 2 - bảng tiến trình.} \texttt{collect()} (\texttt{kernel/sysproc.c:140-174}) duyệt \texttt{proc[0..NPROC)}. Với mỗi slot, hàm giữ \texttt{p->lock}, bỏ qua tiến trình \texttt{UNUSED}, copy \texttt{pid}, \texttt{state}, \texttt{parent\_pid}, \texttt{nsched}, rồi duyệt \texttt{ofile[0..NOFILE)}: fd nào khác 0 được ghi vào \texttt{fds[]}, sau đó so khớp con trỏ \texttt{p->ofile[i]} với \texttt{fileptr[]} để thêm pid vào danh sách của open file tương ứng. \texttt{addpid()} (\texttt{kernel/sysproc.c:122-133}) bỏ qua pid đã có, nên một tiến trình chỉ xuất hiện một lần trong \texttt{pids[]} dù nó \texttt{dup()} cùng một file nhiều lần.
+
+\textbf{Thứ tự lock.} \texttt{sys\_sysinfo()} giữ \texttt{snapshot\_lock} ở ngoài cùng; bên trong, pha 1 lấy \texttt{ftable.lock}, pha 2 lấy \texttt{p->lock}, nhưng hai lock này \textbf{không bao giờ được giữ đồng thời}. Lý do là \texttt{fork()} đang giữ \texttt{p->lock} của tiến trình con rồi gọi \texttt{filedup()} để lấy \texttt{ftable.lock} (\texttt{kernel/proc.c:312-313}), tạo ra thứ tự \texttt{p->lock → ftable.lock}. Nếu \texttt{sysinfo} giữ \texttt{ftable.lock} rồi chờ \texttt{p->lock} thì sẽ tạo chu trình và deadlock. Vì \texttt{snapshot\_lock} chỉ được lấy trước hai lock kia và không có đường nào lấy nó sau \texttt{ftable.lock}/\texttt{p->lock}, đồ thị lock vẫn là một DAG.
+
+\textbf{Hệ quả về tính nhất quán.} Đây là snapshot \textbf{best-effort}, không phải ảnh chụp nguyên tử của toàn hệ thống. Giữa pha 1 và pha 2, một file có thể bị đóng và slot \texttt{struct file} được cấp lại cho file khác, hoặc một tiến trình có thể \texttt{fork()}/\texttt{exit()}. Vì vậy:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{fileptr[j]} có thể trỏ tới một slot đã được tái sử dụng; khi đó pid của file mới có thể bị gán nhầm vào entry cũ.
+    \item \texttt{p->parent} trên thực tế được bảo vệ bởi \texttt{wait\_lock}, không phải \texttt{p->lock}; đọc dưới \texttt{p->lock} chỉ là best-effort nên \texttt{parent\_pid} có thể là giá trị cũ.
+    \item \texttt{nfile} và \texttt{nproc} phản ánh từng bảng tại thời điểm pha tương ứng, không nhất thiết nhất quán tuyệt đối với nhau.
+\end{itemize}
+
+Với mục tiêu quan sát và kiểm thử của lab, các sai lệch này chấp nhận được; chúng được nêu lại ở mục 4.6.
+
+\subsection{Đếm số lần định thời}
+
+\texttt{nsched} được thêm vào \texttt{struct proc} (\texttt{kernel/proc.h:96}), được đặt lại bằng 0 trong \texttt{allocproc()} (\texttt{kernel/proc.c:127}) và tăng trong \texttt{scheduler()} ngay sau khi chuyển trạng thái sang \texttt{RUNNING} (\texttt{kernel/proc.c:469-470}). Định nghĩa là \textbf{số lần scheduler chọn tiến trình}, không phải số lần \texttt{yield()} hay số lần ngủ. Việc tăng nằm trong vùng đang giữ \texttt{p->lock} của scheduler, nên reader trong \texttt{collect()} thấy một giá trị nhất quán. Tiến trình mới có \texttt{nsched = 0} cho đến lần chạy đầu tiên; sau đó giá trị luôn dương.
+
+\subsection{\texttt{user/sysinfotest.c} và kết quả}
+
+Chương trình kiểm thử gồm \textbf{56 check} và \textbf{22 lời gọi \texttt{sysinfo()}} (21 lần qua \texttt{getinfo()} cộng một lần cố tình truyền con trỏ không hợp lệ). Thay vì so sánh với số tuyệt đối, test lấy một snapshot baseline, thực hiện thao tác rồi so sánh \textbf{delta} về \texttt{nfile}, \texttt{ref}, \texttt{npid}, \texttt{nfd}... nhờ vậy không phụ thuộc vào số file console/README đang mở trên hệ thống.
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|l|c|p{8cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Nhóm kiểm thử} & \textbf{Số test} & \textbf{Nội dung chính} \\ \hline
+        Baseline và bất biến & 12 & Có ít nhất một file; có \texttt{init}, \texttt{sh}, chính test; test \texttt{RUNNING}, cha \texttt{SLEEPING}; fd 0–2 mở; pid duy nhất, không có \texttt{UNUSED} \\ \hline
+        Console (\texttt{FD\_DEVICE}) & 4 & File console được liệt kê, \texttt{ref $\ge$ 3}, đọc/ghi được, nhiều pid tham chiếu \\ \hline
+        \texttt{open} (\texttt{FD\_INODE}) & 6 & Tạo đúng một entry, \texttt{ref = 1}, \texttt{O\_RDONLY} được ghi nhận, chỉ một pid \\ \hline
+        \texttt{dup} & 5 & Không tạo entry mới, \texttt{ref = 2}, pid không bị nhân đôi, cả hai fd được liệt kê \\ \hline
+    \end{tabular}
+    \caption{Các nhóm kiểm thử trong \texttt{user/sysinfotest.c}}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|l|c|p{8cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Nhóm kiểm thử} & \textbf{Số test} & \textbf{Nội dung chính} \\ \hline
+        \texttt{close} & 2 & \texttt{ref} trở về 1; bảng file trở về baseline \\ \hline
+        \texttt{fork} & 6 & Con được tạo, \texttt{ref} tăng, pid con xuất hiện, \texttt{parent\_pid} đúng, con thừa hưởng fd \\ \hline
+        \texttt{wait} & 2 & Con rời danh sách; \texttt{ref} giảm về 1 \\ \hline
+        \texttt{ZOMBIE} & 2 & Con chưa được \texttt{wait} ở trạng thái \texttt{ZOMBIE}; sau \texttt{wait} biến mất \\ \hline
+        \texttt{SLEEPING} & 3 & Con bị chặn đọc pipe rỗng ở \texttt{SLEEPING}; sau khi được đánh thức thì được reap \\ \hline
+        \texttt{pipe} (\texttt{FD\_PIPE}) & 5 & Tạo đúng hai entry, mỗi đầu \texttt{ref = 1}, đóng cả hai thì cả hai biến mất \\ \hline
+        \texttt{NOFILE} & 5 & 13 fd còn trống được cấp, 7 lần \texttt{open} thất bại, \texttt{nfd = 16}, đóng các fd thừa còn 0–2 \\ \hline
+        Cross-check & 2 & Mọi file có \texttt{ref > 0} và danh sách pid; mọi tiến trình có fd đều xuất hiện trong bảng file \\ \hline
+        \texttt{nsched} & 1 & Tăng sau khi tiến trình ngủ và được chọn lại \\ \hline
+        \texttt{copyout} & 1 & Con trỏ \texttt{MAXVA} bị từ chối, không panic \\ \hline
+    \end{tabular}
+    \caption{Các nhóm kiểm thử trong \texttt{user/sysinfotest.c} (tiếp theo)}
+\end{table}
+
+Hai điểm thiết kế đáng chú ý:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \textbf{Console, inode và pipe} được kiểm tra riêng vì chúng đi qua ba nhánh khác nhau của \texttt{struct file} (\texttt{FD\_DEVICE}, \texttt{FD\_INODE}, \texttt{FD\_PIPE}). Nhờ vậy test không chỉ kiểm tra số lượng mà còn kiểm tra \texttt{type}, \texttt{readable}, \texttt{writable} và cách \texttt{ref} lan truyền.
+    \item \textbf{Tiến trình \texttt{SLEEPING}} được tạo bằng một con đang chặn trên \texttt{read()} của pipe rỗng, không dùng \texttt{sleep()}. Lý do là \texttt{sleep(n)} bị timer đánh thức mỗi tick, nên trạng thái có thể đổi giữa lúc con ngủ và lúc cha chụp snapshot; chờ pipe thì ổn định hơn.
+\end{itemize}
+
+Kết quả chạy trên QEMU (cấu hình mặc định \texttt{-smp 3}):
+
+\begin{codebox}[2]{\texttt{sysinfotest}}
+    \begin{minted}{c++}
+    sysinfotest: sizeof(struct sysinfo) = 32984 bytes
+    baseline: 1 open files, 3 processes
+    ...
+    PASS: copyout: invalid user pointer is rejected
+    ALL TESTS PASSED
+    \end{minted}
+\end{codebox}
