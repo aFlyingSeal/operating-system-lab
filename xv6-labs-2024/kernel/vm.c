@@ -487,12 +487,35 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 }
 
 
-#ifdef LAB_PGTBL
-void
-vmprint(pagetable_t pagetable) {
-  // your code here
+// Recursively print every valid PTE in a page table.  The depth
+// controls the ".." prefix: one for the top level, two for the
+// next level, and three for leaf entries.
+static void
+vmprintwalk(pagetable_t pagetable, int depth)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+
+    if((pte & PTE_V) == 0)
+      continue;
+
+    printf("..");
+    for(int j = 1; j < depth; j++)
+      printf(" ..");
+    printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
+
+    // A PTE without R/W/X points to another page-table page.
+    if((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+      vmprintwalk((pagetable_t)PTE2PA(pte), depth + 1);
+  }
 }
-#endif
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", (void*)pagetable);
+  vmprintwalk(pagetable, 1);
+}
 
 
 
