@@ -101,7 +101,7 @@ Cờ \texttt{PTE\_A} được thêm vào \texttt{kernel/riscv.h:365}:
 
 \section{Chương trình kiểm thử}
 
-\texttt{user/pgtbltest.c} gồm \textbf{19 check}, chia thành bốn nhóm:
+\texttt{user/pgtbltest.c} gồm \textbf{23 check}, chia thành năm nhóm:
 
 \begin{table}[H]
     \centering
@@ -115,6 +115,7 @@ Cờ \texttt{PTE\_A} được thêm vào \texttt{kernel/riscv.h:365}:
         Ghi và đọc & 7 & Ghi trang 0, đọc trang 5: mask đúng hai bit; gọi lần ba trả 0 vì bit đã bị xoá; trang cuối dải cũng được báo \\ \hline
         Dải ngắn & 2 & \texttt{len = 4} chỉ xét 4 trang đầu, bỏ qua các trang đã truy cập phía sau \\ \hline
         Đầu vào sai & 7 & Dọn bit còn lại, rồi dải đã \texttt{sbrk} âm (chưa ánh xạ), \texttt{len = 0}, \texttt{len} âm, \texttt{len > 64}, \texttt{base = MAXVA}, con trỏ mask xấu --- tất cả trả $-1$ \\ \hline
+        In theo yêu cầu & 4 & \texttt{vmprint()} trả 0, heap vẫn dùng được, bảng trang vẫn \texttt{walk} được, và trang mới vẫn ghi nhận bit \texttt{A} sau khi in \\ \hline
     \end{tabular}
     \caption{Các nhóm kiểm thử trong \texttt{user/pgtbltest.c}}
 \end{table}
@@ -150,11 +151,17 @@ PASS: pgaccess: negative len is rejected
 PASS: pgaccess: more than MAXPAGES pages is rejected
 PASS: pgaccess: virtual address beyond MAXVA is rejected
 PASS: pgaccess: bad mask pointer is rejected
+PASS: vmprint: dumps the page table on demand
+PASS: vmprint: the heap is still usable afterwards
+PASS: vmprint: the page table is still walkable
+PASS: vmprint: the new page still records accesses
 ALL TESTS PASSED
     \end{minted}
 \end{codebox}
 
-Ngoài ra \texttt{usertests -q} trên cùng bản build cũng cho \texttt{ALL TESTS PASSED}, nên việc thêm số hiệu syscall 24 và đụng vào PTE không làm hỏng các bài kiểm thử có sẵn của xv6.
+Bốn dòng cuối thuộc \texttt{vmprint\_test()} (mục 4.4); phần bảng trang mà \texttt{vmprint()} in ra được lược bớt ở đây cho gọn.
+
+Ngoài ra \texttt{usertests -q} trên cùng bản build cũng cho \texttt{ALL TESTS PASSED}, nên việc thêm số hiệu syscall 24--25 và đụng vào PTE không làm hỏng các bài kiểm thử có sẵn của xv6.
 
 Ba hạn chế đã biết:
 

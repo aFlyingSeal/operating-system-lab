@@ -22,8 +22,9 @@ Báo cáo này trình bày ba bài tập của đề bài Lab 2 trên nhánh `pg
 | --- | --- | --- |
 | 2.1 | Phân trang Sv39, `walk()`, `mappages()`, bố cục `memlayout.h` | 2.1–2.4 |
 | 3 | Số byte bộ nhớ trống trong `sysinfo` | 3.1–3.4 |
-| 4 | `vmprint()` và mốc gọi trong `exec()` | 4.1–4.4 |
-| 4 | Giải thích từng trang lá và quyền truy cập | 4.5 |
+| 4 | `vmprint()` và mốc gọi trong `exec()` | 4.1–4.3 |
+| 4 | In theo yêu cầu bằng system call `vmprint()` | 4.4 |
+| 4 | Giải thích từng trang lá và quyền truy cập | 4.6 |
 | 5 | `pgaccess()`, bit `PTE_A`, chương trình kiểm thử | 5.1–5.5 |
 
 Phương pháp thực hiện là **đọc mã nguồn tĩnh** trong `xv6-labs-2024` (phiên bản RISC-V chạy trên QEMU), đối chiếu với chương 3 của sách xv6 và chương trình kiểm thử được **thực nghiệm** trên QEMU: build sạch với `LAB=pgtbl`, chạy `pgtbltest`, `sysinfotest` và `usertests -q`.
@@ -233,9 +234,31 @@ Ba điểm cần lưu ý:
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 ```
 
-Điều kiện `p->pid == 1` khiến bảng trang chỉ được in **một lần**, khi tiến trình `init` nạp chương trình đầu tiên. Mọi lần `exec()` khác (`sh`, `ls`, `usertests`) chạy đúng như cũ và không sinh thêm dòng nào.
+Điều kiện `p->pid == 1` khiến bảng trang chỉ được in **một lần**, khi tiến trình `init` nạp chương trình đầu tiên. Mọi lần `exec()` khác (`sh`, `ls`, `usertests`) chạy đúng như cũ và không sinh thêm dòng nào. Nửa còn lại của yêu cầu — in khi người dùng muốn — được giải quyết bằng system call ở mục 4.4.
 
-## 4.4 Định dạng: một sai lệch đã sửa
+## 4.4 In theo yêu cầu: system call `vmprint()`
+
+Đề yêu cầu bảng trang được in "khi người dùng muốn", nên nhóm thêm một system call không tham số, in bảng trang của **chính tiến trình gọi**:
+
+```c
+// Print the calling process's page table.  exec() already dumps it once for
+// init, but this lets a user program ask for it at any point instead of
+// waiting for that one moment.
+uint64
+sys_vmprint(void)
+{
+  vmprint(myproc()->pagetable);
+  return 0;
+}
+```
+
+Hàm nhận `myproc()->pagetable` thay vì một tham số địa chỉ, nên người dùng **không thể** yêu cầu in bảng trang của tiến trình khác (tránh một kênh rò rỉ thông tin về bố cục bộ nhớ), không cần kiểm tra địa chỉ do người dùng truyền vào, và mỗi tiến trình tự in bảng trang của mình đúng ngữ nghĩa "bảng trang của tiến trình đang chạy".
+
+Số hiệu là `SYS_vmprint = 25` trong `kernel/syscall.h`, được thêm vào bảng dispatch và bảng tên nên `trace(1)` cũng in được tên `vmprint`. Phía người dùng có `int vmprint(void)` (`user/user.h`) và `entry("vmprint")` (`user/usys.pl`).
+
+Hai mốc in cùng tồn tại vì trả lời hai nửa khác nhau của yêu cầu: mốc `pid == 1` ứng với "khi tiến trình được thực thi", system call ứng với "khi người dùng muốn".
+
+## 4.5 Định dạng: một sai lệch đã sửa
 
 Bản đầu tiên in `".."` một lần rồi `" .."` cho các cấp còn lại, nên dòng đầu ra là `..0:` thay vì ` ..0:`. Đề in **một tiền tố `" .."` cho mỗi cấp**, kể cả cấp trên cùng. Sửa thành vòng lặp `for(j = 0; j < depth; j++) printf(" ..")` thì đầu ra khớp đề:
 
@@ -278,9 +301,14 @@ Bốn PTE trung gian còn lại có cờ `0x001` (chỉ `V`): chúng trỏ tới
 - Trang 3 và 4 do `exec()` cấp thêm `(USERSTACK+1)*PGSIZE` với `PTE_W`; `uvmclear()` xoá `PTE_U` của trang thấp hơn để làm trang chắn.
 - `TRAMPOLINE` và `TRAPFRAME` do `proc_pagetable()` ánh xạ cố định với `PTE_R|PTE_X` và `PTE_R|PTE_W`, cố ý **không** có `PTE_U`.
 
-## 4.6 Hạn chế
+Một chi tiết đáng chú ý: bảng trang của `init` in lúc khởi động **không** có bit `A`/`D`, vì các trang vừa được kernel ghi qua direct map chứ tiến trình chưa truy cập. Khi dùng system call ở mục 4.4 để in bảng trang của một tiến trình đang chạy, cờ đổi thành `0x05B` cho text và `0x0D7` cho data/stack — bit `A` (64) và `D` (128) đã được phần cứng bật. Đây chính là bit mà `pgaccess()` ở chương 5 đọc.
 
-Điều kiện `p->pid == 1` in bảng trang ngay khi khởi động, chưa phải "khi người dùng muốn" theo nghĩa chặt nhất. Hai hướng khắc phục: thêm system call `vmprint()` không tham số in bảng trang của tiến trình gọi nó, hoặc cho `exec()` đọc một biến cờ toàn cục do syscall bật/tắt.
+## 4.7 Hạn chế
+
+Sau khi thêm system call `vmprint()`, cả hai nửa của yêu cầu đều được đáp ứng. Hai hạn chế còn lại đều nhỏ và có chủ ý:
+
+- **Vẫn in một lần lúc khởi động.** Mốc trong `exec()` làm đầu ra dài thêm 11 dòng mỗi lần boot; nếu cần im lặng hoàn toàn thì chỉ cần bỏ ba dòng trong `exec()` mà không ảnh hưởng system call.
+- **Chưa có cách in bảng trang của tiến trình khác.** System call luôn in `myproc()->pagetable`; muốn in của tiến trình khác thì phải thêm tham số pid và một lock để đọc `p->pagetable` an toàn.
 
 # 5. Phát hiện trang đã được truy cập: `pgaccess()`
 
@@ -360,7 +388,7 @@ Bốn quyết định thiết kế:
 
 ## 5.4 Chương trình kiểm thử
 
-`user/pgtbltest.c` gồm **19 check**, chia bốn nhóm:
+`user/pgtbltest.c` gồm **23 check**, chia năm nhóm:
 
 | Nhóm | Số check | Nội dung |
 | --- | --- | --- |
@@ -368,6 +396,7 @@ Bốn quyết định thiết kế:
 | Ghi và đọc | 7 | Ghi trang 0, đọc trang 5: mask đúng hai bit; gọi lần ba trả 0 vì bit đã bị xoá; trang cuối dải cũng được báo |
 | Dải ngắn | 2 | `len = 4` chỉ xét 4 trang đầu, bỏ qua các trang đã truy cập phía sau |
 | Đầu vào sai | 7 | Dọn bit còn lại, rồi dải đã `sbrk` âm, `len = 0`, `len` âm, `len > 64`, `base = MAXVA`, con trỏ mask xấu — tất cả trả $-1$ |
+| In theo yêu cầu | 4 | `vmprint()` trả 0, heap vẫn dùng được, bảng trang vẫn `walk` được, trang mới vẫn ghi nhận bit `A` sau khi in |
 
 Hai điểm đáng chú ý:
 
@@ -397,10 +426,16 @@ PASS: pgaccess: negative len is rejected
 PASS: pgaccess: more than MAXPAGES pages is rejected
 PASS: pgaccess: virtual address beyond MAXVA is rejected
 PASS: pgaccess: bad mask pointer is rejected
+PASS: vmprint: dumps the page table on demand
+PASS: vmprint: the heap is still usable afterwards
+PASS: vmprint: the page table is still walkable
+PASS: vmprint: the new page still records accesses
 ALL TESTS PASSED
 ```
 
-`usertests -q` trên cùng bản build cũng cho `ALL TESTS PASSED`, nên việc thêm syscall số 24 và đụng vào PTE không làm hỏng các bài kiểm thử có sẵn.
+Bốn dòng cuối thuộc `vmprint_test()` (mục 4.4); phần bảng trang mà `vmprint()` in ra được lược bớt cho gọn.
+
+`usertests -q` trên cùng bản build cũng cho `ALL TESTS PASSED`, nên việc thêm syscall 24–25 và đụng vào PTE không làm hỏng các bài kiểm thử có sẵn.
 
 Ba hạn chế đã biết:
 
@@ -414,13 +449,13 @@ Cả ba bài đều xoay quanh một cấu trúc duy nhất: mảng 512 PTE củ
 
 Bài 1 tận dụng danh sách trang trống của `kalloc`: `freemem()` đếm số trang dưới `kmem.lock` rồi nhân với `PGSIZE` — đúng và không cần thêm trạng thái, nhưng tốn $O(\text{số trang trống})$ mỗi lần gọi. Kết quả: 133.124.096 byte trống trên 128 MiB, giảm đúng khi `sbrk()` cấp trang và trở lại khi thu hồi.
 
-Bài 2 cho thấy `vmprint()` là một biến thể của `freewalk()`: duyệt 512 PTE, bỏ qua PTE không hợp lệ, in tiền tố theo độ sâu, chỉ đệ quy khi PTE không phải lá. Đầu ra đã được đọc ngược về mã nguồn: `R X U` là text, `R W U` là data và stack, `R W` không `U` là trang chắn và `TRAPFRAME`, `R X` không `U` là `TRAMPOLINE`. Mốc in đặt sau `proc_freepagetable()` và trước `return argc`, kèm điều kiện `p->pid == 1`, giữ cho `exec()` không đổi hành vi.
+Bài 2 cho thấy `vmprint()` là một biến thể của `freewalk()`: duyệt 512 PTE, bỏ qua PTE không hợp lệ, in tiền tố theo độ sâu, chỉ đệ quy khi PTE không phải lá. Đầu ra đã được đọc ngược về mã nguồn: `R X U` là text, `R W U` là data và stack, `R W` không `U` là trang chắn và `TRAPFRAME`, `R X` không `U` là `TRAMPOLINE`. Mốc in đặt sau `proc_freepagetable()` và trước `return argc`, kèm điều kiện `p->pid == 1`, giữ cho `exec()` không đổi hành vi; system call `vmprint()` bổ sung đường in theo yêu cầu cho chính tiến trình gọi.
 
 Bài 3 là bài duy nhất phải **ghi** vào bảng trang: `pgaccess()` đọc rồi xoá `PTE_A`. Hai bài học từ kiểm thử: phải kiểm tra toàn bộ dải trước khi xoá bit, và phải kiểm tra biên trước khi gọi `walk()` vì hàm này panic với địa chỉ $\ge$ `MAXVA`.
 
 Hai lỗi đáng ghi lại vì đều thuộc về môi trường chứ không phải thuật toán: `PTE_LEAF` được `walk()` dùng nhưng chưa định nghĩa trong `riscv.h` (build dừng khi `LAB=pgtbl`), và tiền tố `".."` của `vmprint()` thiếu dấu cách đầu dòng so với định dạng của đề.
 
-Hạn chế còn lại: `vmprint()` in theo mốc `pid == 1` chứ chưa có syscall riêng in theo yêu cầu; `pgaccess()` giới hạn 64 trang và chỉ quan tâm bit `A`, chưa phân biệt đọc với ghi bằng bit `D`.
+Hạn chế còn lại: mốc `pid == 1` vẫn in bảng trang `init` một lần lúc khởi động (chỉ cần bỏ ba dòng trong `exec()` nếu muốn im lặng), system call `vmprint()` chưa cho phép in bảng trang của tiến trình khác, và `pgaccess()` giới hạn 64 trang và chỉ quan tâm bit `A`, chưa phân biệt đọc với ghi bằng bit `D`.
 
 # Tài liệu tham khảo
 
