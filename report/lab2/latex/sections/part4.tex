@@ -1,0 +1,139 @@
+\chapter{In bảng trang: \texttt{vmprint()}}
+
+\newpage
+
+\section{Yêu cầu}
+
+Đề yêu cầu một hàm \texttt{vmprint(pagetable\_t)} in cây bảng trang theo định dạng cố định: dòng đầu là địa chỉ bảng trang gốc, mỗi PTE hợp lệ một dòng, mỗi cấp thêm một tiền tố \texttt{" .."}, kèm chỉ số PTE, giá trị PTE và địa chỉ vật lý tách ra từ PTE. PTE không hợp lệ thì không in. Quan trọng nhất: \textbf{không được làm thay đổi hành vi của \texttt{exec()} hiện có} --- chương trình vẫn chạy bình thường, bảng trang chỉ được in khi có người muốn xem.
+
+\section{Cài đặt đệ quy}
+
+Hàm được viết trong \texttt{kernel/vm.c} và khai báo trong \texttt{kernel/defs.h:165}. Ý tưởng lấy từ \texttt{walk()} (đi xuống theo cây) và \texttt{freewalk()} (đệ quy theo cấp):
+
+\begin{codebox}[vmprint]{\texttt{vmprint()} và hàm đệ quy}
+    \begin{minted}{c}
+// Recursively print every valid PTE in a page table.  The depth
+// controls the ".." prefix: one for the top level, two for the
+// next level, and three for leaf entries.
+static void
+vmprintwalk(pagetable_t pagetable, int depth)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+
+    if((pte & PTE_V) == 0)
+      continue;
+
+    // One " .." per level: the spec prints " ..0:" at the top level and
+    // " .. ..0:" one level down.
+    for(int j = 0; j < depth; j++)
+      printf(" ..");
+    printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
+
+    // A PTE without R/W/X points to another page-table page.
+    if((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+      vmprintwalk((pagetable_t)PTE2PA(pte), depth + 1);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", (void*)pagetable);
+  vmprintwalk(pagetable, 1);
+}
+    \end{minted}
+\end{codebox}
+
+Ba điểm cần lưu ý:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \textbf{Điều kiện dừng} là \texttt{PTE\_LEAF(pte)}, tức là ``không có bit nào trong \texttt{R}/\texttt{W}/\texttt{X}''. Chỉ PTE trung gian mới trỏ tới bảng trang cấp dưới; PTE lá trỏ tới trang dữ liệu nên dừng đệ quy.
+    \item \textbf{Địa chỉ vật lý} lấy bằng \texttt{PTE2PA(pte)}, tức là dịch phải 10 rồi dịch trái 12 để bỏ 10 bit cờ.
+    \item \textbf{Định dạng} dùng \texttt{\%p} và ép kiểu \texttt{(void*)} cho cả PTE lẫn địa chỉ, nhờ vậy in đủ 64 bit có tiền tố \texttt{0x}.
+\end{itemize}
+
+\section{Mốc gọi trong \texttt{exec()}}
+
+Hàm được gọi ở cuối \texttt{exec()}, ngay trước \texttt{return argc} (\texttt{kernel/exec.c:131-134}):
+
+\begin{codebox}[execVmprint]{Mốc in trong \texttt{exec()}}
+    \begin{minted}{c}
+  // Print the initial user page table once, when init execs.
+  if(p->pid == 1)
+    vmprint(p->pagetable);
+
+  return argc; // this ends up in a0, the first argument to main(argc, argv)
+    \end{minted}
+\end{codebox}
+
+Điều kiện \texttt{p->pid == 1} khiến bảng trang chỉ được in \textbf{một lần}, khi tiến trình \texttt{init} nạp chương trình đầu tiên. Mọi lần \texttt{exec()} khác --- \texttt{sh}, \texttt{ls}, \texttt{usertests} --- chạy đúng như cũ và không sinh thêm dòng nào, nên đầu ra của các bài kiểm thử khác không bị nhiễu. Đây là cách đáp ứng yêu cầu ``không ảnh hưởng \texttt{exec} hiện có'' với chi phí nhỏ nhất.
+
+\section{Định dạng: một sai lệch đã sửa}
+
+Bản đầu tiên in \texttt{".."} một lần rồi \texttt{" .."} cho các cấp còn lại, nên dòng đầu ra là \texttt{..0:} thay vì \texttt{ ..0:}. Đề bài (và cả bản mẫu của MIT) in \textbf{một tiền tố \texttt{" .."} cho mỗi cấp}, tức là cấp trên cùng cũng có dấu cách đầu dòng. Sửa lại thành vòng lặp \texttt{for(j = 0; j < depth; j++) printf(" ..")} thì đầu ra khớp đúng đề:
+
+\begin{codebox}[vmprintOut]{Đầu ra của \texttt{vmprint()} khi \texttt{init} chạy}
+    \begin{minted}{text}
+page table 0x0000000087f4e000
+ ..0: pte 0x0000000021fd2801 pa 0x0000000087f4a000
+ .. ..0: pte 0x0000000021fd2401 pa 0x0000000087f49000
+ .. .. ..0: pte 0x0000000021fd2c1b pa 0x0000000087f4b000
+ .. .. ..1: pte 0x0000000021fd201b pa 0x0000000087f48000
+ .. .. ..2: pte 0x0000000021fd1c17 pa 0x0000000087f47000
+ .. .. ..3: pte 0x0000000021fd1807 pa 0x0000000087f46000
+ .. .. ..4: pte 0x0000000021fd1417 pa 0x0000000087f45000
+ ..255: pte 0x0000000021fd3401 pa 0x0000000087f4d000
+ .. ..511: pte 0x0000000021fd3001 pa 0x0000000087f4c000
+ .. .. ..510: pte 0x0000000021fd5807 pa 0x0000000087f56000
+ .. .. ..511: pte 0x000000002000240b pa 0x0000000080009000
+init: starting sh
+    \end{minted}
+\end{codebox}
+
+\section{Giải thích từng trang lá}
+
+Cây in ra có 11 dòng: 4 PTE trung gian và 7 PTE lá. Bảng dưới đọc các bit cờ bằng \texttt{PTE\_FLAGS(pte) = pte \& 0x3FF} và tính địa chỉ ảo từ ba chỉ số.
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.25}
+    \setlength{\tabcolsep}{5pt}
+    \begin{tabular}{|c|c|c|l|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Cấp 2/1/0} & \textbf{Cờ} & \textbf{Địa chỉ ảo} & \textbf{Nội dung và quyền} \\ \hline
+        0/0/0 & \texttt{0x01B} & \texttt{0x0000} & Trang text đầu tiên của \texttt{init}: điểm vào chương trình. \texttt{V R X U} --- đọc và thực thi, không ghi \\ \hline
+        0/0/1 & \texttt{0x01B} & \texttt{0x1000} & Trang text thứ hai. \texttt{V R X U} --- như trên \\ \hline
+        0/0/2 & \texttt{0x017} & \texttt{0x2000} & Data/bss đã khởi tạo của \texttt{init}. \texttt{V R W U} --- đọc ghi, không thực thi \\ \hline
+        0/0/3 & \texttt{0x007} & \texttt{0x3000} & Trang chắn dưới stack, đã bị \texttt{uvmclear()} xoá \texttt{PTE\_U}. \texttt{V R W} --- user \textbf{không} truy cập được, truy cập sẽ fault \\ \hline
+        0/0/4 & \texttt{0x017} & \texttt{0x4000} & Stack của \texttt{init} (\texttt{USERSTACK = 1} trang). \texttt{V R W U} \\ \hline
+        255/511/510 & \texttt{0x007} & \texttt{0x3FFFFFE000} & \texttt{TRAPFRAME}: trang lưu \texttt{trapframe} của tiến trình, trampoline dùng để lưu/khôi phục thanh ghi. \texttt{V R W} --- chỉ supervisor \\ \hline
+        255/511/511 & \texttt{0x00B} & \texttt{0x3FFFFFF000} & \texttt{TRAMPOLINE}: mã chuyển giữa user và supervisor. \texttt{V R X} --- đọc và thực thi, không ghi, chỉ supervisor \\ \hline
+    \end{tabular}
+    \caption{Bảy trang lá trong cây bảng trang của \texttt{init}}
+\end{table}
+
+Bốn PTE trung gian còn lại có cờ \texttt{0x001}, tức là chỉ có \texttt{V}: chúng trỏ tới các bảng trang chứ không ánh xạ trang nào. Cụ thể \texttt{..0} và \texttt{.. ..0} dẫn tới bảng trang chứa các trang 0--4, còn \texttt{..255} và \texttt{.. ..511} dẫn tới bảng trang của vùng địa chỉ cao.
+
+Có thể đối chiếu bảng trên với mã nguồn tạo ra từng trang:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item Trang 0 và 1 do \texttt{exec()} cấp qua \texttt{uvmalloc()} với quyền \texttt{flags2perm(ph.flags)} (\texttt{kernel/exec.c:12-19,65}); \texttt{uvmalloc()} luôn thêm \texttt{PTE\_R|PTE\_U} (\texttt{kernel/vm.c:274}). ELF của \texttt{init} đánh dấu đoạn text là \texttt{PF\_X} nên kết quả là \texttt{R X U}.
+    \item Trang 2 là data: ELF đánh dấu \texttt{PF\_W} nên ra \texttt{R W U}.
+    \item Trang 3 và 4 do \texttt{exec()} cấp thêm \texttt{(USERSTACK+1)*PGSIZE} với \texttt{PTE\_W} (\texttt{kernel/exec.c:83-88}); \texttt{uvmclear()} xoá \texttt{PTE\_U} của trang thấp hơn để làm trang chắn (\texttt{kernel/vm.c:373-381}).
+    \item \texttt{TRAMPOLINE} và \texttt{TRAPFRAME} do \texttt{proc\_pagetable()} ánh xạ cố định với \texttt{PTE\_R|PTE\_X} và \texttt{PTE\_R|PTE\_W}, cố ý \textbf{không} có \texttt{PTE\_U} (\texttt{kernel/proc.c:192-203}).
+\end{itemize}
+
+Giá trị PTE cũng đọc được trực tiếp: \texttt{0x21fd2c1b} có \texttt{PTE2PA = 0x87f4b000} và \texttt{PTE\_FLAGS = 0x01B}; ba bit thấp \texttt{0b011} cho biết trang thuộc bảng trang cấp 0 chỉ số 0 của vùng text.
+
+\section{Hạn chế và hướng cải thiện}
+
+Điều kiện \texttt{p->pid == 1} in bảng trang ngay khi khởi động, không phải ``khi người dùng muốn'' theo nghĩa chặt nhất của đề. Hai hướng khắc phục:
+
+\begin{enumerate}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item Thêm một system call \texttt{vmprint()} không tham số, in bảng trang của tiến trình gọi nó. Cách này đúng nghĩa ``theo yêu cầu'', nhưng phải thêm số hiệu syscall và stub người dùng.
+    \item Giữ nguyên \texttt{vmprint()} trong \texttt{exec()} nhưng đọc một biến cờ toàn cục do syscall đặt, để có thể bật/tắt việc in mà không sửa \texttt{exec()}.
+\end{enumerate}
+
+Ngoài ra \texttt{vmprint()} in cả bảng trang của tiến trình \texttt{init}, nên đầu ra dài 11 dòng ở mỗi lần khởi động. Với mục đích gỡ lỗi thì đây là hành vi mong muốn; nếu cần im lặng hoàn toàn thì chỉ cần bỏ mốc gọi trong \texttt{exec()}.

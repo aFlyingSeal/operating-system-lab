@@ -1,0 +1,15 @@
+\chapter{Kết Luận}
+
+\newpage
+
+Cả ba bài tập của đồ án 2 đều xoay quanh một cấu trúc duy nhất: mảng 512 PTE của mỗi trang bảng trang. Chương 2 cho thấy chỉ cần ba macro (\texttt{PX}, \texttt{PA2PTE}, \texttt{PTE2PA}) và một hàm đi xuống \texttt{walk()} là đủ để đọc và sửa toàn bộ cây.
+
+Bài 1 tận dụng danh sách trang trống của \texttt{kalloc}: \texttt{freemem()} đếm số trang dưới \texttt{kmem.lock} rồi nhân với \texttt{PGSIZE}. Cách làm này đúng và không cần thêm trạng thái, nhưng tốn $O(\text{số trang trống})$ cho mỗi lời gọi \texttt{sysinfo()}. Kết quả kiểm thử cho thấy \texttt{sysinfo} báo 133.124.096 byte (khoảng 126,9 MiB) trống trên tổng 128 MiB, giảm đúng khi \texttt{sbrk()} cấp trang và trở lại khi thu hồi.
+
+Bài 2 cho thấy \texttt{vmprint()} chỉ là một biến thể của \texttt{freewalk()}: duyệt 512 PTE, bỏ qua PTE không hợp lệ, in tiền tố theo độ sâu, và chỉ đệ quy khi PTE không phải lá. Đầu ra thu được đã được đọc ngược về mã nguồn: các trang \texttt{R X U} là text, \texttt{R W U} là data và stack, PTE \texttt{R W} không có \texttt{U} là trang chắn stack và \texttt{TRAPFRAME}, PTE \texttt{R X} không có \texttt{U} là \texttt{TRAMPOLINE}. Việc đặt mốc in sau \texttt{proc\_freepagetable()} nhưng trước \texttt{return argc}, kèm điều kiện \texttt{p->pid == 1}, giữ cho \texttt{exec()} không đổi hành vi.
+
+Bài 3 là bài duy nhất phải \textbf{ghi} vào bảng trang: \texttt{pgaccess()} đọc rồi xoá \texttt{PTE\_A}. Hai điểm quan trọng được rút ra từ quá trình kiểm thử: phải kiểm tra toàn bộ dải trước khi xoá bit (nếu không, một lời gọi lỗi có thể xoá mất dữ liệu của lần gọi trước), và phải kiểm tra biên trước khi gọi \texttt{walk()} vì hàm này \texttt{panic} với địa chỉ $\ge$ \texttt{MAXVA}. \texttt{pgtbltest} kiểm tra 19 tình huống, gồm cả các trường hợp sai đầu vào; \texttt{usertests -q} vẫn cho \texttt{ALL TESTS PASSED}.
+
+Trong quá trình làm, nhóm gặp hai lỗi đáng ghi lại vì đều liên quan đến môi trường chứ không phải thuật toán. Thứ nhất, bản xv6 nhận từ nhánh \texttt{syscall} gọi \texttt{PTE\_LEAF} trong \texttt{walk()} dưới \texttt{\#ifdef LAB\_PGTBL} nhưng chưa định nghĩa macro này, nên chỉ cần đổi \texttt{LAB=pgtbl} là build dừng lại; nhóm đã bổ sung định nghĩa vào \texttt{riscv.h}. Thứ hai, tiền tố \texttt{".."} của \texttt{vmprint()} ban đầu thiếu dấu cách đầu dòng so với định dạng trong đề; lỗi này không ảnh hưởng logic nhưng làm đầu ra khác bản mẫu.
+
+Hạn chế còn lại: \texttt{vmprint()} in theo mốc \texttt{pid == 1} chứ chưa có syscall riêng để in theo yêu cầu; \texttt{pgaccess()} giới hạn 64 trang vì bitmask là một \texttt{uint64} và chỉ quan tâm bit \texttt{A}, chưa phân biệt đọc với ghi bằng bit \texttt{D}. Các hướng khắc phục đã nêu ở mục 4.6 và 5.5.

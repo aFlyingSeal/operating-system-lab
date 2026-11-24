@@ -1,0 +1,34 @@
+\chapter{Mục tiêu và phạm vi}
+
+\newpage
+
+Đồ án số 2 yêu cầu đi vào tầng phân trang của xv6: đọc và sửa bảng trang để tăng tốc một system call và để phát hiện những trang đã được truy cập. Cụ thể có ba bài tập.
+
+\begin{enumerate}[itemsep=2.5pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \textbf{Mở rộng \texttt{sysinfo}} của đồ án 1 để trả thêm số byte bộ nhớ vật lý còn trống.
+    \item \textbf{In bảng trang}: viết \texttt{vmprint()} trong kernel, in cây bảng trang theo đúng định dạng của đề, và giải thích ý nghĩa cùng quyền truy cập của từng trang lá.
+    \item \textbf{Phát hiện trang được truy cập}: cài đặt system call \texttt{pgaccess()} đọc bit \texttt{PTE\_A} của một dải trang và trả về bitmask cho user space.
+\end{enumerate}
+
+Cả ba bài đều nằm trong cùng một cơ chế: bảng trang Sv39 của RISC-V. Vì vậy chương 2 trình bày trước cách xv6 dịch địa chỉ, cách \texttt{walk()} đi xuống ba cấp và ý nghĩa các bit trong PTE; ba chương sau mỗi chương giải quyết một bài tập, kèm kết quả chạy thật trên QEMU.
+
+Nhóm làm việc trên nhánh \texttt{pgtbl} của bộ \texttt{xv6-labs-2024}. Đề bài không yêu cầu một mục khảo sát mã nguồn riêng như đồ án 1, nên báo cáo chỉ giữ phần lý thuyết tối thiểu cần cho ba bài tập.
+
+\vspace{0.5cm}
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{|c|p{9cm}|c|}
+\hline
+\rowcolor[rgb]{0.8, 0.9, 1.0}
+\textbf{Yêu cầu} & \textbf{Nội dung} & \textbf{Mục tương ứng} \\ \hline
+2.1 & Cơ chế phân trang Sv39, \texttt{walk()}, \texttt{mappages()}, bố cục \texttt{memlayout.h} & 2.1--2.4 \\ \hline
+3 & Số byte bộ nhớ trống trong \texttt{sysinfo} & 3.1--3.4 \\ \hline
+4 & \texttt{vmprint()}, mốc gọi trong \texttt{exec()} & 4.1--4.4 \\ \hline
+4 & Giải thích từng trang lá và quyền truy cập & 4.5 \\ \hline
+5 & \texttt{pgaccess()}, bit \texttt{PTE\_A}, chương trình kiểm thử & 5.1--5.5 \\ \hline
+\end{tabular}
+\caption{Đối chiếu yêu cầu của đề và các mục trong báo cáo}
+\end{table}
