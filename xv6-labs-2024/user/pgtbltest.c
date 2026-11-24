@@ -35,6 +35,31 @@ bitof(int page)
   return 1UL << page;
 }
 
+// vmprint() asks the kernel to dump the calling process's page table.  The
+// dump goes to the console, so a user program can only check that the call
+// succeeds and that the table the kernel walked is still intact afterwards.
+static void
+vmprint_test(void)
+{
+  char *buf;
+  uint64 mask;
+
+  printf("pgtbltest: asking the kernel for this process's page table\n");
+  check(vmprint() == 0, "vmprint: dumps the page table on demand");
+
+  buf = sbrk(PGSIZE);
+  check(buf != (char*)-1, "vmprint: the heap is still usable afterwards");
+  if(buf == (char*)-1)
+    return;
+
+  check(pgaccess(buf, 1, &mask) == 0,
+        "vmprint: the page table is still walkable");
+  buf[0] = 'v';
+  check(pgaccess(buf, 1, &mask) == 0 && mask == bitof(0),
+        "vmprint: the new page still records accesses");
+  sbrk(-PGSIZE);
+}
+
 // Touching a page between calls is what sets PTE_A in the first place.
 static void
 pgaccess_test(void)
@@ -101,6 +126,7 @@ main(int argc, char *argv[])
 
   failures = 0;
   pgaccess_test();
+  vmprint_test();
 
   if(failures == 0)
     printf("ALL TESTS PASSED\n");
