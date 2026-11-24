@@ -499,8 +499,9 @@ vmprintwalk(pagetable_t pagetable, int depth)
     if((pte & PTE_V) == 0)
       continue;
 
-    printf("..");
-    for(int j = 1; j < depth; j++)
+    // One " .." per level: the spec prints " ..0:" at the top level and
+    // " .. ..0:" one level down.
+    for(int j = 0; j < depth; j++)
       printf(" ..");
     printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
 
