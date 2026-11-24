@@ -10,6 +10,13 @@ index 62ca029..e177417 100644
  
  
  
+diff --git a/conf/lab.mk b/conf/lab.mk
+index 278d1a8..2992d87 100644
+--- a/conf/lab.mk
++++ b/conf/lab.mk
+@@ -1 +1 @@
+-LAB=syscall
++LAB=pgtbl
 diff --git a/kernel/defs.h b/kernel/defs.h
 index d1b6bb9..8fa6b80 100644
 --- a/kernel/defs.h
@@ -211,46 +218,50 @@ index f7aaa8a..f546612 100644
  #define PXMASK          0x1FF // 9 bits
  #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index 8c186b4..149cc1d 100644
+index 8c186b4..f8eca3e 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
-@@ -102,6 +102,8 @@ extern uint64 sys_link(void);
+@@ -102,6 +102,9 @@ extern uint64 sys_link(void);
  extern uint64 sys_mkdir(void);
  extern uint64 sys_close(void);
  extern uint64 sys_trace(void);
 +extern uint64 sys_sysinfo(void);
 +extern uint64 sys_pgaccess(void);
++extern uint64 sys_vmprint(void);
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -128,6 +130,8 @@ static uint64 (*syscalls[])(void) = {
+@@ -128,6 +131,9 @@ static uint64 (*syscalls[])(void) = {
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
  [SYS_trace]   sys_trace,
 +[SYS_sysinfo] sys_sysinfo,
 +[SYS_pgaccess] sys_pgaccess,
++[SYS_vmprint] sys_vmprint,
  };
  
  static char *syscall_names[] = {
-@@ -153,6 +157,8 @@ static char *syscall_names[] = {
+@@ -153,6 +159,9 @@ static char *syscall_names[] = {
  [SYS_mkdir]   "mkdir",
  [SYS_close]   "close",
  [SYS_trace]   "trace",
 +[SYS_sysinfo] "sysinfo",
 +[SYS_pgaccess] "pgaccess",
++[SYS_vmprint] "vmprint",
  };
  
  void
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index cc112b9..3f2da8c 100644
+index cc112b9..b4f0674 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -21,3 +21,5 @@
+@@ -21,3 +21,6 @@
  #define SYS_mkdir  20
  #define SYS_close  21
  #define SYS_trace  22
 +#define SYS_sysinfo 23
 +#define SYS_pgaccess 24
++#define SYS_vmprint 25
 diff --git a/kernel/sysinfo.h b/kernel/sysinfo.h
 index fb878e6..4991bca 100644
 --- a/kernel/sysinfo.h
@@ -307,7 +318,7 @@ index fb878e6..4991bca 100644
 +
 +#endif
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 3dcc525..8d1daef 100644
+index 3dcc525..1e1ffbc 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -5,6 +5,7 @@
@@ -318,7 +329,7 @@ index 3dcc525..8d1daef 100644
  
  uint64
  sys_exit(void)
-@@ -99,4 +100,146 @@ sys_trace(void)
+@@ -99,4 +100,156 @@ sys_trace(void)
    argint(0, &mask);
    myproc()->trace_mask = mask;
    return 0;
@@ -467,6 +478,16 @@ index 3dcc525..8d1daef 100644
 +    return -1;
 +  return 0;
 +}
++
++// Print the calling process's page table.  exec() already dumps it once for
++// init, but this lets a user program ask for it at any point instead of
++// waiting for that one moment.
++uint64
++sys_vmprint(void)
++{
++  vmprint(myproc()->pagetable);
++  return 0;
++}
 diff --git a/kernel/vm.c b/kernel/vm.c
 index 7f388fe..4cfb107 100644
 --- a/kernel/vm.c
@@ -514,10 +535,10 @@ index 7f388fe..4cfb107 100644
  
 diff --git a/user/pgtbltest.c b/user/pgtbltest.c
 new file mode 100644
-index 0000000..711abe6
+index 0000000..c85cee1
 --- /dev/null
 +++ b/user/pgtbltest.c
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,136 @@
 +// Tests for the page-table syscall added in Lab 2.
 +//
 +// pgaccess(base, len, mask) reports, one bit per page, which of the len pages
@@ -553,6 +574,31 @@ index 0000000..711abe6
 +bitof(int page)
 +{
 +  return 1UL << page;
++}
++
++// vmprint() asks the kernel to dump the calling process's page table.  The
++// dump goes to the console, so a user program can only check that the call
++// succeeds and that the table the kernel walked is still intact afterwards.
++static void
++vmprint_test(void)
++{
++  char *buf;
++  uint64 mask;
++
++  printf("pgtbltest: asking the kernel for this process's page table\n");
++  check(vmprint() == 0, "vmprint: dumps the page table on demand");
++
++  buf = sbrk(PGSIZE);
++  check(buf != (char*)-1, "vmprint: the heap is still usable afterwards");
++  if(buf == (char*)-1)
++    return;
++
++  check(pgaccess(buf, 1, &mask) == 0,
++        "vmprint: the page table is still walkable");
++  buf[0] = 'v';
++  check(pgaccess(buf, 1, &mask) == 0 && mask == bitof(0),
++        "vmprint: the new page still records accesses");
++  sbrk(-PGSIZE);
 +}
 +
 +// Touching a page between calls is what sets PTE_A in the first place.
@@ -621,6 +667,7 @@ index 0000000..711abe6
 +
 +  failures = 0;
 +  pgaccess_test();
++  vmprint_test();
 +
 +  if(failures == 0)
 +    printf("ALL TESTS PASSED\n");
@@ -1122,7 +1169,7 @@ index a92d10a..7991ae4 100644
 +  exit(failures ? 1 : 0);
  }
 diff --git a/user/user.h b/user/user.h
-index bd3b7f0..e3d50f0 100644
+index bd3b7f0..c06791d 100644
 --- a/user/user.h
 +++ b/user/user.h
 @@ -1,4 +1,5 @@
@@ -1131,22 +1178,24 @@ index bd3b7f0..e3d50f0 100644
  
  // system calls
  int fork(void);
-@@ -23,6 +24,8 @@ char* sbrk(int);
+@@ -23,6 +24,9 @@ char* sbrk(int);
  int sleep(int);
  int uptime(void);
  int trace(int);
 +int sysinfo(struct sysinfo *);
 +int pgaccess(void *base, int len, void *mask);
++int vmprint(void);
  
  // ulib.c
  int stat(const char*, struct stat*);
 diff --git a/user/usys.pl b/user/usys.pl
-index 9c97b05..2cfdfda 100755
+index 9c97b05..ce5f8f0 100755
 --- a/user/usys.pl
 +++ b/user/usys.pl
-@@ -37,3 +37,5 @@ entry("sbrk");
+@@ -37,3 +37,6 @@ entry("sbrk");
  entry("sleep");
  entry("uptime");
  entry("trace");
 +entry("sysinfo");
 +entry("pgaccess");
++entry("vmprint");
