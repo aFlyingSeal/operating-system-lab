@@ -11,7 +11,7 @@ index 62ca029..e177417 100644
  
  
 diff --git a/kernel/defs.h b/kernel/defs.h
-index d1b6bb9..f7e3c49 100644
+index d1b6bb9..8fa6b80 100644
 --- a/kernel/defs.h
 +++ b/kernel/defs.h
 @@ -8,6 +8,7 @@ struct spinlock;
@@ -30,7 +30,15 @@ index d1b6bb9..f7e3c49 100644
  
  // fs.c
  void            fsinit(int);
-@@ -141,6 +143,9 @@ int             fetchstr(uint64, char*, int);
+@@ -63,6 +65,7 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++uint64          freemem(void);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -141,6 +144,9 @@ int             fetchstr(uint64, char*, int);
  int             fetchaddr(uint64, uint64*);
  void            syscall();
  
@@ -40,6 +48,29 @@ index d1b6bb9..f7e3c49 100644
  // trap.c
  extern uint     ticks;
  void            trapinit(void);
+@@ -156,6 +162,7 @@ void            uartputc_sync(int);
+ int             uartgetc(void);
+ 
+ // vm.c
++void            vmprint(pagetable_t);
+ void            kvminit(void);
+ void            kvminithart(void);
+ void            kvmmap(pagetable_t, uint64, uint64, uint64, int);
+diff --git a/kernel/exec.c b/kernel/exec.c
+index 6d7c452..3f5a0b6 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -128,6 +128,10 @@ exec(char *path, char **argv)
+   p->trapframe->sp = sp; // initial stack pointer
+   proc_freepagetable(oldpagetable, oldsz);
+ 
++  // Print the initial user page table once, when init execs.
++  if(p->pid == 1)
++    vmprint(p->pagetable);
++
+   return argc; // this ends up in a0, the first argument to main(argc, argv)
+ 
+  bad:
 diff --git a/kernel/file.c b/kernel/file.c
 index 25fa226..10e8636 100644
 --- a/kernel/file.c
@@ -84,6 +115,34 @@ index 25fa226..10e8636 100644
  // Allocate a file structure.
  struct file*
  filealloc(void)
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 5247b91..10a0ace 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -70,6 +70,23 @@ kfree(void *pa)
+ 
+ 
+ 
++// Count the bytes of physical memory currently on the free list.
++// The walk runs under kmem.lock so the list cannot change underneath us;
++// callers must not hold kmem.lock themselves.
++uint64
++freemem(void)
++{
++  struct run *r;
++  uint64 bytes = 0;
++
++  acquire(&kmem.lock);
++  for(r = kmem.freelist; r; r = r->next)
++    bytes += PGSIZE;
++  release(&kmem.lock);
++
++  return bytes;
++}
++
+ // Allocate one 4096-byte page of physical memory.
+ // Returns a pointer that the kernel can use.
+ // Returns 0 if the memory cannot be allocated.
 diff --git a/kernel/main.c b/kernel/main.c
 index f0d3171..069bf65 100644
 --- a/kernel/main.c
@@ -128,48 +187,75 @@ index 897a05c..94a07c7 100644
  
    // wait_lock must be held when using this:
    struct proc *parent;         // Parent process
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index f7aaa8a..f546612 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -362,6 +362,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_A (1L << 6) // accessed
+ 
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+@@ -370,6 +371,10 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ 
+ #define PTE_FLAGS(pte) ((pte) & 0x3FF)
+ 
++// A leaf PTE maps a page; a non-leaf PTE points at the next page-table page.
++// walk() in vm.c uses this under LAB_PGTBL to stop at a superpage.
++#define PTE_LEAF(pte) (((pte) & (PTE_R | PTE_W | PTE_X)) != 0)
++
+ // extract the three 9-bit page table indices from a virtual address.
+ #define PXMASK          0x1FF // 9 bits
+ #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
 diff --git a/kernel/syscall.c b/kernel/syscall.c
-index 8c186b4..8da97db 100644
+index 8c186b4..149cc1d 100644
 --- a/kernel/syscall.c
 +++ b/kernel/syscall.c
-@@ -102,6 +102,7 @@ extern uint64 sys_link(void);
+@@ -102,6 +102,8 @@ extern uint64 sys_link(void);
  extern uint64 sys_mkdir(void);
  extern uint64 sys_close(void);
  extern uint64 sys_trace(void);
 +extern uint64 sys_sysinfo(void);
++extern uint64 sys_pgaccess(void);
  
  // An array mapping syscall numbers from syscall.h
  // to the function that handles the system call.
-@@ -128,6 +129,7 @@ static uint64 (*syscalls[])(void) = {
+@@ -128,6 +130,8 @@ static uint64 (*syscalls[])(void) = {
  [SYS_mkdir]   sys_mkdir,
  [SYS_close]   sys_close,
  [SYS_trace]   sys_trace,
 +[SYS_sysinfo] sys_sysinfo,
++[SYS_pgaccess] sys_pgaccess,
  };
  
  static char *syscall_names[] = {
-@@ -153,6 +155,7 @@ static char *syscall_names[] = {
+@@ -153,6 +157,8 @@ static char *syscall_names[] = {
  [SYS_mkdir]   "mkdir",
  [SYS_close]   "close",
  [SYS_trace]   "trace",
 +[SYS_sysinfo] "sysinfo",
++[SYS_pgaccess] "pgaccess",
  };
  
  void
 diff --git a/kernel/syscall.h b/kernel/syscall.h
-index cc112b9..0dfedc7 100644
+index cc112b9..3f2da8c 100644
 --- a/kernel/syscall.h
 +++ b/kernel/syscall.h
-@@ -21,3 +21,4 @@
+@@ -21,3 +21,5 @@
  #define SYS_mkdir  20
  #define SYS_close  21
  #define SYS_trace  22
 +#define SYS_sysinfo 23
++#define SYS_pgaccess 24
 diff --git a/kernel/sysinfo.h b/kernel/sysinfo.h
-index fb878e6..6a45956 100644
+index fb878e6..4991bca 100644
 --- a/kernel/sysinfo.h
 +++ b/kernel/sysinfo.h
-@@ -1,4 +1,47 @@
+@@ -1,4 +1,48 @@
 +// Shared data structures for the sysinfo() system call.
 +//
 +// The kernel fills one of these structures in its own memory and hands it to
@@ -212,6 +298,7 @@ index fb878e6..6a45956 100644
  struct sysinfo {
 -  uint64 freemem;   // amount of free memory (bytes)
 -  uint64 nproc;     // number of process
++  uint64 freemem;                  // bytes of physical memory on the free list
 +  int nfile;
 +  struct sysinfo_file files[SYSINFO_MAX_FILES];
 +  int nproc;
@@ -220,7 +307,7 @@ index fb878e6..6a45956 100644
 +
 +#endif
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 3dcc525..f898191 100644
+index 3dcc525..8d1daef 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -5,6 +5,7 @@
@@ -231,7 +318,7 @@ index 3dcc525..f898191 100644
  
  uint64
  sys_exit(void)
-@@ -99,4 +100,94 @@ sys_trace(void)
+@@ -99,4 +100,146 @@ sys_trace(void)
    argint(0, &mask);
    myproc()->trace_mask = mask;
    return 0;
@@ -278,6 +365,10 @@ index 3dcc525..f898191 100644
 +{
 +  struct proc *p;
 +  int i, j, n;
++
++  // Free physical memory, in bytes.  freemem() takes kmem.lock, which no
++  // other snapshot path holds, so there is no lock-order cycle.
++  info->freemem = freemem();
 +
 +  // Phase 1: open files.
 +  info->nfile = filesnapshot(info->files, fileptr, SYSINFO_MAX_FILES);
@@ -328,11 +419,220 @@ index 3dcc525..f898191 100644
 +
 +  return r < 0 ? -1 : 0;
 +}
++
++// The bitmask is a single uint64, so one call can report at most 64 pages.
++#define PGACCESS_MAX 64
++
++// Report which of the len pages starting at base have the RISC-V accessed
++// bit set, then clear that bit.  Bit i of the mask stands for page
++// base + i*PGSIZE.
++//
++// Returns -1 if the range is invalid or only partly mapped.  The whole
++// range is checked before any access bit is cleared, so a rejected call
++// leaves the page table untouched.
++uint64
++sys_pgaccess(void)
++{
++  struct proc *p = myproc();
++  uint64 base, maskaddr, bits = 0;
++  pte_t *pte;
++  int len;
++
++  argaddr(0, &base);
++  argint(1, &len);
++  argaddr(2, &maskaddr);
++
++  if(len <= 0 || len > PGACCESS_MAX)
++    return -1;
++  if(base >= MAXVA || base + (uint64)len * PGSIZE > MAXVA)
++    return -1;
++
++  // Pass 1: every page must be a valid user mapping.
++  for(int i = 0; i < len; i++){
++    if((pte = walk(p->pagetable, base + i * PGSIZE, 0)) == 0)
++      return -1;
++    if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
++      return -1;
++  }
++
++  // Pass 2: collect the access bits and clear them for the next call.
++  for(int i = 0; i < len; i++){
++    pte = walk(p->pagetable, base + i * PGSIZE, 0);
++    if(*pte & PTE_A)
++      bits |= 1UL << i;
++    *pte &= ~PTE_A;
++  }
++
++  if(copyout(p->pagetable, maskaddr, (char *)&bits, sizeof(bits)) < 0)
++    return -1;
++  return 0;
++}
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 7f388fe..4cfb107 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -487,12 +487,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+ }
+ 
+ 
+-#ifdef LAB_PGTBL
++// Recursively print every valid PTE in a page table.  The depth
++// controls the ".." prefix: one for the top level, two for the
++// next level, and three for leaf entries.
++static void
++vmprintwalk(pagetable_t pagetable, int depth)
++{
++  for(int i = 0; i < 512; i++){
++    pte_t pte = pagetable[i];
++
++    if((pte & PTE_V) == 0)
++      continue;
++
++    // One " .." per level: the spec prints " ..0:" at the top level and
++    // " .. ..0:" one level down.
++    for(int j = 0; j < depth; j++)
++      printf(" ..");
++    printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
++
++    // A PTE without R/W/X points to another page-table page.
++    if((pte & (PTE_R | PTE_W | PTE_X)) == 0)
++      vmprintwalk((pagetable_t)PTE2PA(pte), depth + 1);
++  }
++}
++
+ void
+-vmprint(pagetable_t pagetable) {
+-  // your code here
++vmprint(pagetable_t pagetable)
++{
++  printf("page table %p\n", (void*)pagetable);
++  vmprintwalk(pagetable, 1);
+ }
+-#endif
+ 
+ 
+ 
+diff --git a/user/pgtbltest.c b/user/pgtbltest.c
+new file mode 100644
+index 0000000..711abe6
+--- /dev/null
++++ b/user/pgtbltest.c
+@@ -0,0 +1,110 @@
++// Tests for the page-table syscall added in Lab 2.
++//
++// pgaccess(base, len, mask) reports, one bit per page, which of the len pages
++// starting at base have the RISC-V accessed bit set, and clears that bit so
++// the next call reports only new accesses.
++
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/riscv.h"
++#include "user/user.h"
++
++// One uint64 bitmask, so this is also the kernel's upper bound.
++#define MAXPAGES 64
++
++#define NPAGES 32
++
++static int failures;
++
++static void
++check(int cond, const char *name)
++{
++  if(cond){
++    printf("PASS: %s\n", name);
++  } else {
++    printf("FAIL: %s\n", name);
++    failures++;
++  }
++}
++
++// The bits a mask would have if only the given pages were accessed.
++static uint64
++bitof(int page)
++{
++  return 1UL << page;
++}
++
++// Touching a page between calls is what sets PTE_A in the first place.
++static void
++pgaccess_test(void)
++{
++  char *buf;
++  uint64 mask, again;
++
++  buf = sbrk(NPAGES * PGSIZE);
++  check(buf != (char*)-1, "pgaccess: heap grows by NPAGES pages");
++  if(buf == (char*)-1)
++    return;
++
++  // The pages were just mapped by sbrk(); the kernel cleared them through the
++  // direct map, so no access bit is set yet.  One call makes sure, whatever
++  // the previous state was.
++  check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: first call succeeds");
++  check(mask == 0, "pgaccess: freshly mapped pages are not reported");
++
++  // Write one page, read another: both count as an access.
++  buf[0] = 'a';
++  check(buf[5 * PGSIZE] == 0, "pgaccess: untouched page reads as zero");
++
++  check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: second call succeeds");
++  check(mask == (bitof(0) | bitof(5)),
++        "pgaccess: exactly the written and read pages are reported");
++
++  check(pgaccess(buf, NPAGES, &again) == 0, "pgaccess: third call succeeds");
++  check(again == 0, "pgaccess: the previous call cleared the access bits");
++
++  // The mask must be written to user memory, not the kernel's own copy.
++  mask = 0;
++  buf[NPAGES * PGSIZE - 1] = 'z';
++  check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: last page call succeeds");
++  check(mask == bitof(NPAGES - 1), "pgaccess: last page of the range is reported");
++
++  // A shorter range only looks at its own pages.
++  buf[1] = 'b';
++  check(pgaccess(buf, 4, &mask) == 0, "pgaccess: short range call succeeds");
++  check(mask == bitof(0), "pgaccess: short range ignores pages past len");
++
++  // Clear what is left before the error cases.
++  check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: range cleared");
++
++  // Unmapped memory: sbrk() shrink takes the pages away again.
++  sbrk(-NPAGES * PGSIZE);
++  check(pgaccess(buf, NPAGES, &mask) == -1,
++        "pgaccess: unmapped range is rejected");
++
++  // Invalid arguments.
++  check(pgaccess(buf, 0, &mask) == -1, "pgaccess: len 0 is rejected");
++  check(pgaccess(buf, -1, &mask) == -1, "pgaccess: negative len is rejected");
++  check(pgaccess(buf, MAXPAGES + 1, &mask) == -1,
++        "pgaccess: more than MAXPAGES pages is rejected");
++  check(pgaccess((void*)MAXVA, 1, &mask) == -1,
++        "pgaccess: virtual address beyond MAXVA is rejected");
++  check(pgaccess(buf, 1, (void*)MAXVA) == -1,
++        "pgaccess: bad mask pointer is rejected");
++}
++
++int
++main(int argc, char *argv[])
++{
++  printf("pgtbltest: page-table tests\n");
++
++  failures = 0;
++  pgaccess_test();
++
++  if(failures == 0)
++    printf("ALL TESTS PASSED\n");
++  else
++    printf("%d TEST(S) FAILED\n", failures);
++  exit(failures ? 1 : 0);
++}
 diff --git a/user/sysinfotest.c b/user/sysinfotest.c
-index a92d10a..78d30c9 100644
+index a92d10a..7991ae4 100644
 --- a/user/sysinfotest.c
 +++ b/user/sysinfotest.c
-@@ -1,153 +1,326 @@
+@@ -1,153 +1,368 @@
 +// Tests for the sysinfo() system call.
 +//
 +// The structure is too large for the one-page user stack, so every snapshot
@@ -340,6 +640,7 @@ index a92d10a..78d30c9 100644
 +
  #include "kernel/types.h"
  #include "kernel/riscv.h"
++#include "kernel/memlayout.h"
 +#include "kernel/spinlock.h"
 +#include "kernel/sleeplock.h"
 +#include "kernel/fs.h"
@@ -617,17 +918,8 @@ index a92d10a..78d30c9 100644
 -  if(info.nproc != nproc) {
 -      printf("sysinfotest: FAIL nproc is %ld instead of %ld\n", info.nproc, nproc);
 -      exit(1);
--  }
--}
 +  check(child > 0, "fork: child is created");
- 
--void testbad() {
--  int pid = fork();
--  int xstatus;
--  
--  if(pid < 0){
--    printf("sysinfotest: fork failed\n");
--    exit(1);
++
 +  getinfo(&si);
 +  f = findfile(&si, getpid(), FD_INODE);
 +  check(f && f->ref == 2, "fork: child duplicates the open file");
@@ -669,9 +961,7 @@ index a92d10a..78d30c9 100644
 +    read(sp[0], &ch, 1);
 +    exit(0);
    }
--  if(pid == 0){
--      sinfo(0x0);
--      exit(0);
+-}
 +  close(sp[0]);
 +  sleep(5);
 +  getinfo(&si);
@@ -682,7 +972,14 @@ index a92d10a..78d30c9 100644
 +  close(sp[1]);
 +  getinfo(&si);
 +  check(findproc(&si, child) == 0, "sleep: woken child is reaped");
-+
+ 
+-void testbad() {
+-  int pid = fork();
+-  int xstatus;
+-  
+-  if(pid < 0){
+-    printf("sysinfotest: fork failed\n");
+-    exit(1);
 +  // pipe(): two FD_PIPE files, one for each end.
 +  getinfo(&prev);
 +  check(pipe(p) == 0, "pipe: creates a pipe");
@@ -710,12 +1007,9 @@ index a92d10a..78d30c9 100644
 +    else
 +      failed++;
    }
--  wait(&xstatus);
--  if(xstatus == -1)  // kernel killed child?
--    exit(0);
--  else {
--    printf("sysinfotest: testbad succeeded %d\n", xstatus);
--    exit(xstatus);
+-  if(pid == 0){
+-      sinfo(0x0);
+-      exit(0);
 +  check(opened == NOFILE - 3, "nofile: every free descriptor is used");
 +  check(failed == 7, "nofile: open fails once NOFILE is reached");
 +  getinfo(&si);
@@ -748,18 +1042,14 @@ index a92d10a..78d30c9 100644
 +    if(k == 0)
 +      ok = 0;
    }
--}
+-  wait(&xstatus);
+-  if(xstatus == -1)  // kernel killed child?
+-    exit(0);
+-  else {
+-    printf("sysinfotest: testbad succeeded %d\n", xstatus);
+-    exit(xstatus);
 +  check(ok, "cross: every process with fds appears in the file list");
- 
--int
--main(int argc, char *argv[])
--{
--  printf("sysinfotest: start\n");
--  testcall();
--  testmem();
--  testproc();
--  printf("sysinfotest: OK\n");
--  exit(0);
++
 +  // nsched must grow when the process is scheduled again.
 +  getinfo(&si);
 +  me = findproc(&si, getpid());
@@ -774,6 +1064,57 @@ index a92d10a..78d30c9 100644
 +  check(sysinfo((struct sysinfo *)MAXVA) == -1,
 +        "copyout: invalid user pointer is rejected");
 +
++  // freemem: the kernel reports the bytes still on the kalloc free list.
++  getinfo(&prev);
++  printf("freemem: %d bytes (about %d MB) free\n",
++         (int)prev.freemem, (int)(prev.freemem / (1024 * 1024)));
++  check(prev.freemem > 0, "freemem: reports a positive number of bytes");
++  check(prev.freemem % PGSIZE == 0,
++        "freemem: value is a whole number of pages");
++  check(prev.freemem < PHYSTOP - KERNBASE,
++        "freemem: value fits inside physical memory");
++
++  // Growing the heap takes pages off the free list, so the count must drop
++  // by the pages requested plus at most the page-table pages needed to map
++  // them.  Shrinking it puts the data pages back.
++  {
++    int grow = 8;
++    uint64 before, delta;
++    char *heap;
++
++    getinfo(&prev);
++    before = prev.freemem;
++    heap = sbrk(grow * PGSIZE);
++    check(heap != (char*)-1, "freemem: sbrk grows the heap");
++    if(heap != (char*)-1){
++      heap[0] = 1;                            // fault the first page in
++      heap[grow * PGSIZE - 1] = 1;            // and the last one
++
++      getinfo(&si);
++      check(si.freemem < before, "freemem: drops after page allocation");
++      delta = before - si.freemem;
++      check(delta >= (uint64)grow * PGSIZE,
++            "freemem: drops by at least one page per allocated page");
++      check(delta <= (uint64)(grow + 2) * PGSIZE,
++            "freemem: drop stays within the data and page-table pages");
++
++      sbrk(-grow * PGSIZE);
++      getinfo(&si);
++      check(si.freemem >= before - 2 * PGSIZE && si.freemem <= before,
++            "freemem: recovers after the pages are freed");
++    }
+   }
+-}
+ 
+-int
+-main(int argc, char *argv[])
+-{
+-  printf("sysinfotest: start\n");
+-  testcall();
+-  testmem();
+-  testproc();
+-  printf("sysinfotest: OK\n");
+-  exit(0);
 +  if(failures == 0)
 +    printf("ALL TESTS PASSED\n");
 +  else
@@ -781,7 +1122,7 @@ index a92d10a..78d30c9 100644
 +  exit(failures ? 1 : 0);
  }
 diff --git a/user/user.h b/user/user.h
-index bd3b7f0..7542da7 100644
+index bd3b7f0..e3d50f0 100644
 --- a/user/user.h
 +++ b/user/user.h
 @@ -1,4 +1,5 @@
@@ -790,20 +1131,22 @@ index bd3b7f0..7542da7 100644
  
  // system calls
  int fork(void);
-@@ -23,6 +24,7 @@ char* sbrk(int);
+@@ -23,6 +24,8 @@ char* sbrk(int);
  int sleep(int);
  int uptime(void);
  int trace(int);
 +int sysinfo(struct sysinfo *);
++int pgaccess(void *base, int len, void *mask);
  
  // ulib.c
  int stat(const char*, struct stat*);
 diff --git a/user/usys.pl b/user/usys.pl
-index 9c97b05..bc109fd 100755
+index 9c97b05..2cfdfda 100755
 --- a/user/usys.pl
 +++ b/user/usys.pl
-@@ -37,3 +37,4 @@ entry("sbrk");
+@@ -37,3 +37,5 @@ entry("sbrk");
  entry("sleep");
  entry("uptime");
  entry("trace");
 +entry("sysinfo");
++entry("pgaccess");
