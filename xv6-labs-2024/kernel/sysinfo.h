@@ -38,6 +38,7 @@ struct sysinfo_proc {
 };
 
 struct sysinfo {
+  uint64 freemem;                  // bytes of physical memory on the free list
   int nfile;
   struct sysinfo_file files[SYSINFO_MAX_FILES];
   int nproc;
