@@ -370,6 +370,10 @@ typedef uint64 *pagetable_t; // 512 PTEs
 
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
 
+// A leaf PTE maps a page; a non-leaf PTE points at the next page-table page.
+// walk() in vm.c uses this under LAB_PGTBL to stop at a superpage.
+#define PTE_LEAF(pte) (((pte) & (PTE_R | PTE_W | PTE_X)) != 0)
+
 // extract the three 9-bit page table indices from a virtual address.
 #define PXMASK          0x1FF // 9 bits
 #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
