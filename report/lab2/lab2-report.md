@@ -198,8 +198,10 @@ vmprintwalk(pagetable_t pagetable, int depth)
     if((pte & PTE_V) == 0)
       continue;
 
-    // One " .." per level below the root: the spec prints "..0:" at the
-    // top level and " ..0:" one level down.
+    // The spec prints "..0:" at the top level, " ..0:" one level down
+    // and " .. ..0:" two levels down: one ".." for this level plus " .."
+    // for every level below the root.
+    printf("..");
     for(int j = 0; j < depth; j++)
       printf(" ..");
     printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
