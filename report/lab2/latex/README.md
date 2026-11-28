@@ -15,7 +15,6 @@ Mã nguồn báo cáo Lab 2.
   - `part4.tex` — `vmprint()` và giải thích từng trang lá.
   - `part5.tex` — `pgaccess()` và chương trình kiểm thử.
   - `conclusion.tex` — kết luận.
-- `utilities.tex` — mẫu bảng và hộp code, hiện chưa dùng.
 - `latexmkrc` — cấu hình build bằng XeLaTeX.
 - `.gitignore` — bỏ qua file build của LaTeX.
 
@@ -23,6 +22,6 @@ Mã nguồn báo cáo Lab 2.
 
 Chạy `latexmk report.tex` trong thư mục này.
 
-Chỉ định rõ `report.tex` vì trong thư mục còn `biblio.tex` và `utilities.tex` là các mảnh nội dung, không phải tài liệu độc lập. File kết quả là `report.pdf`; bản nộp được copy sang `report/lab2/report.pdf`.
+Chỉ định rõ `report.tex` vì trong thư mục còn `biblio.tex` là mảnh nội dung, không phải tài liệu độc lập. File kết quả là `report.pdf`; bản nộp được copy sang `report/lab2/report.pdf`.
 
 Yêu cầu: XeLaTeX (có `fontspec`/`polyglossia` cho tiếng Việt), `tcolorbox`, `minted` và `pygments` (`python3 -c "import pygments"`).

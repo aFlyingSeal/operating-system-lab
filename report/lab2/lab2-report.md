@@ -23,7 +23,7 @@ Báo cáo này trình bày ba bài tập của đề bài Lab 2 trên nhánh `pg
 | 2.1 | Phân trang Sv39, `walk()`, `mappages()`, bố cục `memlayout.h` | 2.1–2.4 |
 | 3 | Số byte bộ nhớ trống trong `sysinfo` | 3.1–3.4 |
 | 4 | `vmprint()` và mốc gọi trong `exec()` | 4.1–4.3 |
-| 4 | In theo yêu cầu bằng system call `vmprint()` | 4.4 |
+| 4 | Mở rộng: in theo yêu cầu bằng system call `vmprint()` | 4.4 |
 | 4 | Giải thích từng trang lá và quyền truy cập | 4.6 |
 | 5 | `pgaccess()`, bit `PTE_A`, chương trình kiểm thử | 5.1–5.5 |
 
@@ -187,8 +187,8 @@ ALL TESTS PASSED
 
 ```c
 // Recursively print every valid PTE in a page table.  The depth
-// controls the ".." prefix: one for the top level, two for the
-// next level, and three for leaf entries.
+// controls the " .." prefix: zero for the top level, one for the
+// next level, and two for leaf entries.
 static void
 vmprintwalk(pagetable_t pagetable, int depth)
 {
@@ -198,8 +198,8 @@ vmprintwalk(pagetable_t pagetable, int depth)
     if((pte & PTE_V) == 0)
       continue;
 
-    // One " .." per level: the spec prints " ..0:" at the top level and
-    // " .. ..0:" one level down.
+    // One " .." per level below the root: the spec prints "..0:" at the
+    // top level and " ..0:" one level down.
     for(int j = 0; j < depth; j++)
       printf(" ..");
     printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
@@ -214,7 +214,7 @@ void
 vmprint(pagetable_t pagetable)
 {
   printf("page table %p\n", (void*)pagetable);
-  vmprintwalk(pagetable, 1);
+  vmprintwalk(pagetable, 0);
 }
 ```
 
@@ -234,11 +234,11 @@ Ba điểm cần lưu ý:
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 ```
 
-Điều kiện `p->pid == 1` khiến bảng trang chỉ được in **một lần**, khi tiến trình `init` nạp chương trình đầu tiên. Mọi lần `exec()` khác (`sh`, `ls`, `usertests`) chạy đúng như cũ và không sinh thêm dòng nào. Nửa còn lại của yêu cầu — in khi người dùng muốn — được giải quyết bằng system call ở mục 4.4.
+Điều kiện `p->pid == 1` khiến bảng trang chỉ được in **một lần**, khi tiến trình `init` nạp chương trình đầu tiên. Mọi lần `exec()` khác (`sh`, `ls`, `usertests`) chạy đúng như cũ và không sinh thêm dòng nào. Phần mở rộng — in khi người dùng muốn — được giải quyết bằng system call ở mục 4.4.
 
 ## 4.4 In theo yêu cầu: system call `vmprint()`
 
-Đề yêu cầu bảng trang được in "khi người dùng muốn", nên nhóm thêm một system call không tham số, in bảng trang của **chính tiến trình gọi**:
+Đề chỉ bắt buộc gọi `vmprint()` trong `exec()`; nhóm thêm một system call không tham số như phần mở rộng để in bảng trang của **chính tiến trình gọi** theo yêu cầu:
 
 ```c
 // Print the calling process's page table.  exec() already dumps it once for
@@ -256,29 +256,29 @@ Hàm nhận `myproc()->pagetable` thay vì một tham số địa chỉ, nên ng
 
 Số hiệu là `SYS_vmprint = 25` trong `kernel/syscall.h`, được thêm vào bảng dispatch và bảng tên nên `trace(1)` cũng in được tên `vmprint`. Phía người dùng có `int vmprint(void)` (`user/user.h`) và `entry("vmprint")` (`user/usys.pl`).
 
-Hai mốc in cùng tồn tại vì trả lời hai nửa khác nhau của yêu cầu: mốc `pid == 1` ứng với "khi tiến trình được thực thi", system call ứng với "khi người dùng muốn".
+Hai mốc in cùng tồn tại: mốc `pid == 1` đáp ứng yêu cầu chính "khi tiến trình được thực thi", system call là phần mở rộng cho "khi người dùng muốn".
 
 ## 4.5 Định dạng: một sai lệch đã sửa
 
-Bản đầu tiên in `".."` một lần rồi `" .."` cho các cấp còn lại, nên dòng đầu ra là `..0:` thay vì ` ..0:`. Đề in **một tiền tố `" .."` cho mỗi cấp**, kể cả cấp trên cùng. Sửa thành vòng lặp `for(j = 0; j < depth; j++) printf(" ..")` thì đầu ra khớp đề:
+Đề in dòng cấp gốc bắt đầu bằng `..` (không có dấu cách), mỗi cấp sâu hơn thêm một tiền tố `" .."`. Vì vậy hàm đệ quy nhận `depth = 0` ở cấp gốc và chỉ in `depth` tiền tố `" .."`; đầu ra khớp đúng đề:
 
 ```
 page table 0x0000000087f4e000
- ..0: pte 0x0000000021fd2801 pa 0x0000000087f4a000
- .. ..0: pte 0x0000000021fd2401 pa 0x0000000087f49000
- .. .. ..0: pte 0x0000000021fd2c1b pa 0x0000000087f4b000
- .. .. ..1: pte 0x0000000021fd201b pa 0x0000000087f48000
- .. .. ..2: pte 0x0000000021fd1c17 pa 0x0000000087f47000
- .. .. ..3: pte 0x0000000021fd1807 pa 0x0000000087f46000
- .. .. ..4: pte 0x0000000021fd1417 pa 0x0000000087f45000
- ..255: pte 0x0000000021fd3401 pa 0x0000000087f4d000
- .. ..511: pte 0x0000000021fd3001 pa 0x0000000087f4c000
- .. .. ..510: pte 0x0000000021fd5807 pa 0x0000000087f56000
- .. .. ..511: pte 0x000000002000240b pa 0x0000000080009000
+..0: pte 0x0000000021fd2801 pa 0x0000000087f4a000
+.. ..0: pte 0x0000000021fd2401 pa 0x0000000087f49000
+.. .. ..0: pte 0x0000000021fd2c1b pa 0x0000000087f4b000
+.. .. ..1: pte 0x0000000021fd201b pa 0x0000000087f48000
+.. .. ..2: pte 0x0000000021fd1c17 pa 0x0000000087f47000
+.. .. ..3: pte 0x0000000021fd1807 pa 0x0000000087f46000
+.. .. ..4: pte 0x0000000021fd1417 pa 0x0000000087f45000
+..255: pte 0x0000000021fd3401 pa 0x0000000087f4d000
+.. ..511: pte 0x0000000021fd3001 pa 0x0000000087f4c000
+.. .. ..510: pte 0x0000000021fd5807 pa 0x0000000087f56000
+.. .. ..511: pte 0x000000002000240b pa 0x0000000080009000
 init: starting sh
 ```
 
-## 4.5 Giải thích từng trang lá
+## 4.6 Giải thích từng trang lá
 
 Cây in ra có 11 dòng: 4 PTE trung gian và 7 PTE lá. Địa chỉ ảo tính từ ba chỉ số, cờ đọc bằng `PTE_FLAGS(pte) = pte & 0x3FF`.
 
@@ -305,7 +305,7 @@ Một chi tiết đáng chú ý: bảng trang của `init` in lúc khởi độn
 
 ## 4.7 Hạn chế
 
-Sau khi thêm system call `vmprint()`, cả hai nửa của yêu cầu đều được đáp ứng. Hai hạn chế còn lại đều nhỏ và có chủ ý:
+Sau khi thêm system call `vmprint()`, yêu cầu chính và phần mở rộng đều được đáp ứng. Hai hạn chế còn lại đều nhỏ và có chủ ý:
 
 - **Vẫn in một lần lúc khởi động.** Mốc trong `exec()` làm đầu ra dài thêm 11 dòng mỗi lần boot; nếu cần im lặng hoàn toàn thì chỉ cần bỏ ba dòng trong `exec()` mà không ảnh hưởng system call.
 - **Chưa có cách in bảng trang của tiến trình khác.** System call luôn in `myproc()->pagetable`; muốn in của tiến trình khác thì phải thêm tham số pid và một lock để đọc `p->pagetable` an toàn.
@@ -340,6 +340,13 @@ Bảng tên được cập nhật vì đồ án 1 đã thêm system call `trace`
 // The bitmask is a single uint64, so one call can report at most 64 pages.
 #define PGACCESS_MAX 64
 
+// Report which of the len pages starting at base have the RISC-V accessed
+// bit set, then clear that bit.  Bit i of the mask stands for page
+// base + i*PGSIZE.
+//
+// Returns -1 if the range is invalid or only partly mapped.  The whole
+// range is checked and the mask is copied out before any access bit is
+// cleared, so a rejected call leaves the page table untouched.
 uint64
 sys_pgaccess(void)
 {
@@ -354,7 +361,10 @@ sys_pgaccess(void)
 
   if(len <= 0 || len > PGACCESS_MAX)
     return -1;
-  if(base >= MAXVA || base + (uint64)len * PGSIZE > MAXVA)
+  if(base >= MAXVA || base % PGSIZE != 0 ||
+     base + (uint64)len * PGSIZE > MAXVA)
+    return -1;
+  if(maskaddr >= MAXVA || maskaddr + sizeof(bits) > MAXVA)
     return -1;
 
   // Pass 1: every page must be a valid user mapping.
@@ -365,42 +375,52 @@ sys_pgaccess(void)
       return -1;
   }
 
-  // Pass 2: collect the access bits and clear them for the next call.
+  // Pass 2: collect the access bits.  Do not clear them yet: if copyout()
+  // fails, the next call must still see the same access state.
   for(int i = 0; i < len; i++){
     pte = walk(p->pagetable, base + i * PGSIZE, 0);
     if(*pte & PTE_A)
       bits |= 1UL << i;
-    *pte &= ~PTE_A;
   }
 
   if(copyout(p->pagetable, maskaddr, (char *)&bits, sizeof(bits)) < 0)
     return -1;
+
+  // Pass 3: clear only the bits that were successfully reported.
+  for(int i = 0; i < len; i++){
+    if(bits & (1UL << i)){
+      pte = walk(p->pagetable, base + i * PGSIZE, 0);
+      *pte &= ~PTE_A;
+    }
+  }
   return 0;
 }
 ```
 
-Bốn quyết định thiết kế:
+Năm quyết định thiết kế:
 
 1. **Bitmask nằm trong kernel.** Kernel điền xong mới `copyout()` một lần, thay vì ghi từng bit vào con trỏ người dùng.
 2. **Giới hạn 64 trang.** Một `uint64` chỉ có 64 bit, nên `len > 64` bị từ chối thay vì âm thầm cắt bớt.
-3. **Kiểm tra trước, sửa sau.** Toàn bộ dải được kiểm tra ở pha 1; chỉ khi mọi trang hợp lệ mới sang pha 2 để đọc và xoá `PTE_A`. Nhờ vậy một lời gọi bị từ chối **không** để lại tác dụng phụ.
-4. **Kiểm tra biên trước khi `walk()`.** `walk()` panic khi `va >= MAXVA`, nên `base + len*PGSIZE` được kiểm tra trước, tránh cả trường hợp tràn số.
+3. **Kiểm tra địa chỉ trước khi đi bộ bảng trang.** `base` phải căn trang, toàn bộ dải phải nằm dưới `MAXVA`, và vùng `mask` cũng phải nằm trong không gian địa chỉ hợp lệ.
+4. **Kiểm tra trước, chỉ xoá sau khi `copyout()` thành công.** Pha 1 kiểm tra toàn bộ dải; pha 2 chỉ đọc các bit `PTE_A`; pha 3 mới xoá những bit đã được báo. Nếu dải có trang chưa ánh xạ hoặc con trỏ `mask` không ghi được, lời gọi trả $-1$ và **không** làm mất trạng thái truy cập của các trang.
+5. **Kiểm tra biên trước khi `walk()`.** `walk()` panic khi `va >= MAXVA`, nên `base + len*PGSIZE` được kiểm tra trước, tránh cả trường hợp tràn số.
 
 ## 5.4 Chương trình kiểm thử
 
-`user/pgtbltest.c` gồm **23 check**, chia năm nhóm:
+`user/pgtbltest.c` gồm **28 check**, chia năm nhóm:
 
 | Nhóm | Số check | Nội dung |
 | --- | --- | --- |
 | Trạng thái ban đầu | 3 | Cấp 32 trang bằng `sbrk()`; lần gọi đầu trả 0 vì kernel vừa xoá trang qua direct map |
 | Ghi và đọc | 7 | Ghi trang 0, đọc trang 5: mask đúng hai bit; gọi lần ba trả 0 vì bit đã bị xoá; trang cuối dải cũng được báo |
 | Dải ngắn | 2 | `len = 4` chỉ xét 4 trang đầu, bỏ qua các trang đã truy cập phía sau |
-| Đầu vào sai | 7 | Dọn bit còn lại, rồi dải đã `sbrk` âm, `len = 0`, `len` âm, `len > 64`, `base = MAXVA`, con trỏ mask xấu — tất cả trả $-1$ |
+| Đầu vào sai | 12 | Dọn bit còn lại; con trỏ mask xấu và `base` lệch trang bị từ chối mà không xoá bit; dải đã `sbrk` âm, `len = 0`, `len` âm, `len > 64`, `base = MAXVA` — tất cả trả $-1$ |
 | In theo yêu cầu | 4 | `vmprint()` trả 0, heap vẫn dùng được, bảng trang vẫn `walk` được, trang mới vẫn ghi nhận bit `A` sau khi in |
 
-Hai điểm đáng chú ý:
+Ba điểm đáng chú ý:
 
 - Test **không** giả định trạng thái ban đầu của `PTE_A`: lời gọi đầu tiên vừa kiểm tra vừa xoá mọi bit còn sót, nên kết quả các lần sau là tất định.
+- Các test từ chối kiểm tra thêm rằng lời gọi lỗi không xoá bit: sau khi cố tình truy cập một trang, gọi `pgaccess()` với con trỏ mask xấu hoặc `base` lệch trang phải trả $-1$, rồi lời gọi hợp lệ ngay sau đó vẫn thấy bit `A` của trang đó.
 - Trường hợp "dải chưa ánh xạ" không dùng một địa chỉ cố định, mà `sbrk(-32*PGSIZE)` để thu hồi đúng 32 trang vừa cấp, nên phép thử không phụ thuộc bố cục địa chỉ cụ thể.
 
 ## 5.5 Kết quả và hạn chế
@@ -420,12 +440,17 @@ PASS: pgaccess: last page of the range is reported
 PASS: pgaccess: short range call succeeds
 PASS: pgaccess: short range ignores pages past len
 PASS: pgaccess: range cleared
+PASS: pgaccess: bad mask pointer is rejected
+PASS: pgaccess: call after bad mask succeeds
+PASS: pgaccess: bad mask does not clear access bits
+PASS: pgaccess: unaligned base is rejected
+PASS: pgaccess: call after unaligned base succeeds
+PASS: pgaccess: unaligned base does not clear access bits
 PASS: pgaccess: unmapped range is rejected
 PASS: pgaccess: len 0 is rejected
 PASS: pgaccess: negative len is rejected
 PASS: pgaccess: more than MAXPAGES pages is rejected
 PASS: pgaccess: virtual address beyond MAXVA is rejected
-PASS: pgaccess: bad mask pointer is rejected
 PASS: vmprint: dumps the page table on demand
 PASS: vmprint: the heap is still usable afterwards
 PASS: vmprint: the page table is still walkable
@@ -451,9 +476,9 @@ Bài 1 tận dụng danh sách trang trống của `kalloc`: `freemem()` đếm 
 
 Bài 2 cho thấy `vmprint()` là một biến thể của `freewalk()`: duyệt 512 PTE, bỏ qua PTE không hợp lệ, in tiền tố theo độ sâu, chỉ đệ quy khi PTE không phải lá. Đầu ra đã được đọc ngược về mã nguồn: `R X U` là text, `R W U` là data và stack, `R W` không `U` là trang chắn và `TRAPFRAME`, `R X` không `U` là `TRAMPOLINE`. Mốc in đặt sau `proc_freepagetable()` và trước `return argc`, kèm điều kiện `p->pid == 1`, giữ cho `exec()` không đổi hành vi; system call `vmprint()` bổ sung đường in theo yêu cầu cho chính tiến trình gọi.
 
-Bài 3 là bài duy nhất phải **ghi** vào bảng trang: `pgaccess()` đọc rồi xoá `PTE_A`. Hai bài học từ kiểm thử: phải kiểm tra toàn bộ dải trước khi xoá bit, và phải kiểm tra biên trước khi gọi `walk()` vì hàm này panic với địa chỉ $\ge$ `MAXVA`.
+Bài 3 là bài duy nhất phải **ghi** vào bảng trang: `pgaccess()` đọc rồi xoá `PTE_A`. Ba bài học từ kiểm thử: phải kiểm tra toàn bộ dải trước khi xoá bit, chỉ xoá sau khi `copyout()` mask thành công, và phải kiểm tra biên cùng căn trang trước khi gọi `walk()` vì hàm này panic với địa chỉ $\ge$ `MAXVA`.
 
-Hai lỗi đáng ghi lại vì đều thuộc về môi trường chứ không phải thuật toán: `PTE_LEAF` được `walk()` dùng nhưng chưa định nghĩa trong `riscv.h` (build dừng khi `LAB=pgtbl`), và tiền tố `".."` của `vmprint()` thiếu dấu cách đầu dòng so với định dạng của đề.
+Hai lỗi đáng ghi lại vì đều thuộc về môi trường chứ không phải thuật toán: `PTE_LEAF` được `walk()` dùng nhưng chưa định nghĩa trong `riscv.h` (build dừng khi `LAB=pgtbl`), và tiền tố `..` của `vmprint()` từng bị thêm dấu cách ở cấp gốc, làm đầu ra khác bản mẫu; nhóm đã sửa để cấp gốc bắt đầu bằng `..` và mỗi cấp sâu hơn thêm một `" .."`.
 
 Hạn chế còn lại: mốc `pid == 1` vẫn in bảng trang `init` một lần lúc khởi động (chỉ cần bỏ ba dòng trong `exec()` nếu muốn im lặng), system call `vmprint()` chưa cho phép in bảng trang của tiến trình khác, và `pgaccess()` giới hạn 64 trang và chỉ quan tâm bit `A`, chưa phân biệt đọc với ghi bằng bit `D`.
 
