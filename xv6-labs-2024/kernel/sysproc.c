@@ -195,3 +195,62 @@ sys_sysinfo(void)
 
   return r < 0 ? -1 : 0;
 }
+
+// The bitmask is a single uint64, so one call can report at most 64 pages.
+#define PGACCESS_MAX 64
+
+// Report which of the len pages starting at base have the RISC-V accessed
+// bit set, then clear that bit.  Bit i of the mask stands for page
+// base + i*PGSIZE.
+//
+// Returns -1 if the range is invalid or only partly mapped.  The whole
+// range is checked and the mask is copied out before any access bit is
+// cleared, so a rejected call leaves the page table untouched.
+uint64
+sys_pgaccess(void)
+{
+  struct proc *p = myproc();
+  uint64 base, maskaddr, bits = 0;
+  pte_t *pte;
+  int len;
+
+  argaddr(0, &base);
+  argint(1, &len);
+  argaddr(2, &maskaddr);
+
+  if(len <= 0 || len > PGACCESS_MAX)
+    return -1;
+  if(base >= MAXVA || base % PGSIZE != 0 ||
+     base + (uint64)len * PGSIZE > MAXVA)
+    return -1;
+  if(maskaddr >= MAXVA || maskaddr + sizeof(bits) > MAXVA)
+    return -1;
+
+  // Pass 1: every page must be a valid user mapping.
+  for(int i = 0; i < len; i++){
+    if((pte = walk(p->pagetable, base + i * PGSIZE, 0)) == 0)
+      return -1;
+    if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+  }
+
+  // Pass 2: collect the access bits.  Do not clear them yet: if copyout()
+  // fails, the next call must still see the same access state.
+  for(int i = 0; i < len; i++){
+    pte = walk(p->pagetable, base + i * PGSIZE, 0);
+    if(*pte & PTE_A)
+      bits |= 1UL << i;
+  }
+
+  if(copyout(p->pagetable, maskaddr, (char *)&bits, sizeof(bits)) < 0)
+    return -1;
+
+  // Pass 3: clear only the bits that were successfully reported.
+  for(int i = 0; i < len; i++){
+    if(bits & (1UL << i)){
+      pte = walk(p->pagetable, base + i * PGSIZE, 0);
+      *pte &= ~PTE_A;
+    }
+  }
+  return 0;
+}
