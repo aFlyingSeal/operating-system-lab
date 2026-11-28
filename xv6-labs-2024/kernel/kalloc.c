@@ -70,6 +70,23 @@ kfree(void *pa)
 
 
 
+// Count the bytes of physical memory currently on the free list.
+// The walk runs under kmem.lock so the list cannot change underneath us;
+// callers must not hold kmem.lock themselves.
+uint64
+freemem(void)
+{
+  struct run *r;
+  uint64 bytes = 0;
+
+  acquire(&kmem.lock);
+  for(r = kmem.freelist; r; r = r->next)
+    bytes += PGSIZE;
+  release(&kmem.lock);
+
+  return bytes;
+}
+
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.

@@ -142,6 +142,10 @@ collect(struct sysinfo *info)
   struct proc *p;
   int i, j, n;
 
+  // Free physical memory, in bytes.  freemem() takes kmem.lock, which no
+  // other snapshot path holds, so there is no lock-order cycle.
+  info->freemem = freemem();
+
   // Phase 1: open files.
   info->nfile = filesnapshot(info->files, fileptr, SYSINFO_MAX_FILES);
 

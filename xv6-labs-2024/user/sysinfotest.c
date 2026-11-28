@@ -5,6 +5,7 @@
 
 #include "kernel/types.h"
 #include "kernel/riscv.h"
+#include "kernel/memlayout.h"
 #include "kernel/spinlock.h"
 #include "kernel/sleeplock.h"
 #include "kernel/fs.h"
@@ -317,6 +318,47 @@ main(void)
   // A bad user pointer must be rejected instead of panicking.
   check(sysinfo((struct sysinfo *)MAXVA) == -1,
         "copyout: invalid user pointer is rejected");
+
+  // freemem: the kernel reports the bytes still on the kalloc free list.
+  getinfo(&prev);
+  printf("freemem: %d bytes (about %d MB) free\n",
+         (int)prev.freemem, (int)(prev.freemem / (1024 * 1024)));
+  check(prev.freemem > 0, "freemem: reports a positive number of bytes");
+  check(prev.freemem % PGSIZE == 0,
+        "freemem: value is a whole number of pages");
+  check(prev.freemem < PHYSTOP - KERNBASE,
+        "freemem: value fits inside physical memory");
+
+  // Growing the heap takes pages off the free list, so the count must drop
+  // by the pages requested plus at most the page-table pages needed to map
+  // them.  Shrinking it puts the data pages back.
+  {
+    int grow = 8;
+    uint64 before, delta;
+    char *heap;
+
+    getinfo(&prev);
+    before = prev.freemem;
+    heap = sbrk(grow * PGSIZE);
+    check(heap != (char*)-1, "freemem: sbrk grows the heap");
+    if(heap != (char*)-1){
+      heap[0] = 1;                            // fault the first page in
+      heap[grow * PGSIZE - 1] = 1;            // and the last one
+
+      getinfo(&si);
+      check(si.freemem < before, "freemem: drops after page allocation");
+      delta = before - si.freemem;
+      check(delta >= (uint64)grow * PGSIZE,
+            "freemem: drops by at least one page per allocated page");
+      check(delta <= (uint64)(grow + 2) * PGSIZE,
+            "freemem: drop stays within the data and page-table pages");
+
+      sbrk(-grow * PGSIZE);
+      getinfo(&si);
+      check(si.freemem >= before - 2 * PGSIZE && si.freemem <= before,
+            "freemem: recovers after the pages are freed");
+    }
+  }
 
   if(failures == 0)
     printf("ALL TESTS PASSED\n");
