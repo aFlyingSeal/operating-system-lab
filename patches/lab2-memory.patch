@@ -318,7 +318,7 @@ index fb878e6..4991bca 100644
 +
 +#endif
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 3dcc525..1e1ffbc 100644
+index 3dcc525..c3b342d 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
 @@ -5,6 +5,7 @@
@@ -329,7 +329,7 @@ index 3dcc525..1e1ffbc 100644
  
  uint64
  sys_exit(void)
-@@ -99,4 +100,156 @@ sys_trace(void)
+@@ -99,4 +100,167 @@ sys_trace(void)
    argint(0, &mask);
    myproc()->trace_mask = mask;
    return 0;
@@ -439,8 +439,8 @@ index 3dcc525..1e1ffbc 100644
 +// base + i*PGSIZE.
 +//
 +// Returns -1 if the range is invalid or only partly mapped.  The whole
-+// range is checked before any access bit is cleared, so a rejected call
-+// leaves the page table untouched.
++// range is checked and the mask is copied out before any access bit is
++// cleared, so a rejected call leaves the page table untouched.
 +uint64
 +sys_pgaccess(void)
 +{
@@ -455,7 +455,10 @@ index 3dcc525..1e1ffbc 100644
 +
 +  if(len <= 0 || len > PGACCESS_MAX)
 +    return -1;
-+  if(base >= MAXVA || base + (uint64)len * PGSIZE > MAXVA)
++  if(base >= MAXVA || base % PGSIZE != 0 ||
++     base + (uint64)len * PGSIZE > MAXVA)
++    return -1;
++  if(maskaddr >= MAXVA || maskaddr + sizeof(bits) > MAXVA)
 +    return -1;
 +
 +  // Pass 1: every page must be a valid user mapping.
@@ -466,16 +469,24 @@ index 3dcc525..1e1ffbc 100644
 +      return -1;
 +  }
 +
-+  // Pass 2: collect the access bits and clear them for the next call.
++  // Pass 2: collect the access bits.  Do not clear them yet: if copyout()
++  // fails, the next call must still see the same access state.
 +  for(int i = 0; i < len; i++){
 +    pte = walk(p->pagetable, base + i * PGSIZE, 0);
 +    if(*pte & PTE_A)
 +      bits |= 1UL << i;
-+    *pte &= ~PTE_A;
 +  }
 +
 +  if(copyout(p->pagetable, maskaddr, (char *)&bits, sizeof(bits)) < 0)
 +    return -1;
++
++  // Pass 3: clear only the bits that were successfully reported.
++  for(int i = 0; i < len; i++){
++    if(bits & (1UL << i)){
++      pte = walk(p->pagetable, base + i * PGSIZE, 0);
++      *pte &= ~PTE_A;
++    }
++  }
 +  return 0;
 +}
 +
@@ -489,17 +500,17 @@ index 3dcc525..1e1ffbc 100644
 +  return 0;
 +}
 diff --git a/kernel/vm.c b/kernel/vm.c
-index 7f388fe..4cfb107 100644
+index 7f388fe..4ed59fc 100644
 --- a/kernel/vm.c
 +++ b/kernel/vm.c
-@@ -487,12 +487,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+@@ -487,12 +487,38 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
  }
  
  
 -#ifdef LAB_PGTBL
 +// Recursively print every valid PTE in a page table.  The depth
-+// controls the ".." prefix: one for the top level, two for the
-+// next level, and three for leaf entries.
++// controls the " .." prefix: zero for the top level, one for the
++// next level, and two for leaf entries.
 +static void
 +vmprintwalk(pagetable_t pagetable, int depth)
 +{
@@ -509,8 +520,10 @@ index 7f388fe..4cfb107 100644
 +    if((pte & PTE_V) == 0)
 +      continue;
 +
-+    // One " .." per level: the spec prints " ..0:" at the top level and
-+    // " .. ..0:" one level down.
++    // The spec prints "..0:" at the top level, " ..0:" one level down,
++    // and " .. ..0:" two levels down: one ".." for this level plus " .."
++    // for every level below the root.
++    printf("..");
 +    for(int j = 0; j < depth; j++)
 +      printf(" ..");
 +    printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
@@ -527,7 +540,7 @@ index 7f388fe..4cfb107 100644
 +vmprint(pagetable_t pagetable)
 +{
 +  printf("page table %p\n", (void*)pagetable);
-+  vmprintwalk(pagetable, 1);
++  vmprintwalk(pagetable, 0);
  }
 -#endif
  
@@ -535,10 +548,10 @@ index 7f388fe..4cfb107 100644
  
 diff --git a/user/pgtbltest.c b/user/pgtbltest.c
 new file mode 100644
-index 0000000..c85cee1
+index 0000000..2ed7aea
 --- /dev/null
 +++ b/user/pgtbltest.c
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,152 @@
 +// Tests for the page-table syscall added in Lab 2.
 +//
 +// pgaccess(base, len, mask) reports, one bit per page, which of the len pages
@@ -644,6 +657,24 @@ index 0000000..c85cee1
 +  // Clear what is left before the error cases.
 +  check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: range cleared");
 +
++  // An invalid mask pointer must not clear the access bits.
++  buf[0] = 'c';
++  check(pgaccess(buf, 1, (void*)MAXVA) == -1,
++        "pgaccess: bad mask pointer is rejected");
++  check(pgaccess(buf, 1, &mask) == 0,
++        "pgaccess: call after bad mask succeeds");
++  check(mask == bitof(0),
++        "pgaccess: bad mask does not clear access bits");
++
++  // The base must be page-aligned.
++  buf[0] = 'd';
++  check(pgaccess(buf + 1, 1, &mask) == -1,
++        "pgaccess: unaligned base is rejected");
++  check(pgaccess(buf, 1, &mask) == 0,
++        "pgaccess: call after unaligned base succeeds");
++  check(mask == bitof(0),
++        "pgaccess: unaligned base does not clear access bits");
++
 +  // Unmapped memory: sbrk() shrink takes the pages away again.
 +  sbrk(-NPAGES * PGSIZE);
 +  check(pgaccess(buf, NPAGES, &mask) == -1,
@@ -656,8 +687,6 @@ index 0000000..c85cee1
 +        "pgaccess: more than MAXPAGES pages is rejected");
 +  check(pgaccess((void*)MAXVA, 1, &mask) == -1,
 +        "pgaccess: virtual address beyond MAXVA is rejected");
-+  check(pgaccess(buf, 1, (void*)MAXVA) == -1,
-+        "pgaccess: bad mask pointer is rejected");
 +}
 +
 +int
