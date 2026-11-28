@@ -488,8 +488,8 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 
 // Recursively print every valid PTE in a page table.  The depth
-// controls the ".." prefix: one for the top level, two for the
-// next level, and three for leaf entries.
+// controls the " .." prefix: zero for the top level, one for the
+// next level, and two for leaf entries.
 static void
 vmprintwalk(pagetable_t pagetable, int depth)
 {
@@ -499,8 +499,10 @@ vmprintwalk(pagetable_t pagetable, int depth)
     if((pte & PTE_V) == 0)
       continue;
 
-    // One " .." per level: the spec prints " ..0:" at the top level and
-    // " .. ..0:" one level down.
+    // The spec prints "..0:" at the top level, " ..0:" one level down,
+    // and " .. ..0:" two levels down: one ".." for this level plus " .."
+    // for every level below the root.
+    printf("..");
     for(int j = 0; j < depth; j++)
       printf(" ..");
     printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)PTE2PA(pte));
@@ -515,7 +517,7 @@ void
 vmprint(pagetable_t pagetable)
 {
   printf("page table %p\n", (void*)pagetable);
-  vmprintwalk(pagetable, 1);
+  vmprintwalk(pagetable, 0);
 }
 
 
