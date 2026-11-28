@@ -1,0 +1,19 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.toc
+*.xdv
+*.synctex.gz
+_minted-*/
+
+# Build output; the submission copy lives in report/lab2/report.pdf
+report.pdf

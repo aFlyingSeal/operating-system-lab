@@ -1,0 +1,122 @@
+\chapter{Mở rộng \texttt{sysinfo}: số byte bộ nhớ trống}
+
+\newpage
+
+\section{Bộ cấp phát trang của xv6}
+
+Toàn bộ bộ nhớ vật lý mà kernel quản lý nằm giữa \texttt{end} (hết vùng text/data của kernel) và \texttt{PHYSTOP} ($\texttt{KERNBASE} + 128$ MiB). \texttt{kinit()} gọi \texttt{freerange()} để đẩy từng trang trong khoảng đó vào danh sách liên kết đơn \texttt{kmem.freelist} (\texttt{kernel/kalloc.c:27-47}). Mỗi trang trống được dùng chính nội dung của nó để lưu con trỏ \texttt{struct run *next}, nên danh sách không tốn thêm bộ nhớ.
+
+\texttt{kalloc()} lấy phần tử đầu danh sách, \texttt{kfree()} đẩy trang trở lại đầu danh sách; cả hai đều giữ \texttt{kmem.lock}. Vì vậy \textbf{độ dài danh sách} chính là số trang còn trống, và đó là nguồn dữ liệu duy nhất cần đọc để trả lời câu hỏi của đề.
+
+\section{\texttt{freemem()} trong \texttt{kalloc.c}}
+
+\begin{codebox}[freemem]{\texttt{freemem()}}
+    \begin{minted}{c}
+// Count the bytes of physical memory currently on the free list.
+// The walk runs under kmem.lock so the list cannot change underneath us;
+// callers must not hold kmem.lock themselves.
+uint64
+freemem(void)
+{
+  struct run *r;
+  uint64 bytes = 0;
+
+  acquire(&kmem.lock);
+  for(r = kmem.freelist; r; r = r->next)
+    bytes += PGSIZE;
+  release(&kmem.lock);
+
+  return bytes;
+}
+    \end{minted}
+\end{codebox}
+
+Hàm trả về \textbf{byte} chứ không phải số trang, đúng như đề yêu cầu, và được khai báo trong \texttt{kernel/defs.h:68} cùng nhóm \texttt{kalloc.c}. Việc duyệt danh sách nằm trong \texttt{kmem.lock} là bắt buộc: nếu thả lock giữa đường, một \texttt{kalloc()} khác có thể lấy mất một trang và con trỏ \texttt{next} của trang đó bị ghi đè bởi dữ liệu của người dùng mới, khiến vòng lặp đi vào rác.
+
+\section{Nối vào \texttt{sysinfo}}
+
+\texttt{struct sysinfo} (\texttt{kernel/sysinfo.h:40-46}) được thêm một trường đầu tiên:
+
+\begin{codebox}[sysinfoStruct]{\texttt{struct sysinfo} sau khi mở rộng}
+    \begin{minted}{c}
+struct sysinfo {
+  uint64 freemem;                  // bytes of physical memory on the free list
+  int nfile;
+  struct sysinfo_file files[SYSINFO_MAX_FILES];
+  int nproc;
+  struct sysinfo_proc procs[SYSINFO_MAX_PROCS];
+};
+    \end{minted}
+\end{codebox}
+
+Trường mới nằm ở \textbf{đầu} cấu trúc để phần đọc của người dùng thấy ngay số liệu quan trọng, và vì cả kernel lẫn user đều biên dịch từ cùng header này nên không có chuyện lệch layout. Kích thước cấu trúc tăng từ 32.984 lên \textbf{32.992 byte} (thêm 8 byte), đúng bằng dòng \texttt{sizeof} mà \texttt{sysinfotest} in ra.
+
+Trong \texttt{collect()} (\texttt{kernel/sysproc.c:140-152}), \texttt{freemem()} được gọi \textbf{trước} hai pha chụp ảnh:
+
+\begin{codebox}[collectFreemem]{Mốc gọi trong \texttt{collect()}}
+    \begin{minted}{c}
+  // Free physical memory, in bytes.  freemem() takes kmem.lock, which no
+  // other snapshot path holds, so there is no lock-order cycle.
+  info->freemem = freemem();
+
+  // Phase 1: open files.
+  info->nfile = filesnapshot(info->files, fileptr, SYSINFO_MAX_FILES);
+    \end{minted}
+\end{codebox}
+
+\section{Thứ tự lock và chi phí}
+
+\texttt{sys\_sysinfo()} giữ \texttt{snapshot\_lock} suốt thời gian chụp ảnh. Bên trong, \texttt{freemem()} lấy thêm \texttt{kmem.lock}, còn pha 1 lấy \texttt{ftable.lock} và pha 2 lấy \texttt{p->lock}. Đồ thị lock vẫn là DAG vì:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{kmem.lock} không bao giờ được giữ đồng thời với \texttt{ftable.lock} hay \texttt{p->lock}: lời gọi \texttt{freemem()} kết thúc trước khi pha 1 bắt đầu;
+    \item không đường nào trong kernel lấy \texttt{snapshot\_lock} khi đang giữ \texttt{kmem.lock}, \texttt{ftable.lock} hay \texttt{p->lock}.
+\end{itemize}
+
+Chi phí của cách làm này là $O(\text{số trang trống})$. Với 128 MiB và trang 4 KiB, danh sách có khoảng 32.000 phần tử, nên mỗi lời gọi \texttt{sysinfo()} phải đi qua chừng ấy con trỏ trong lúc giữ một spinlock (tức là tắt interrupt trên CPU hiện tại). Với mục đích quan sát của bài lab, đây là mức chấp nhận được; hướng tốt hơn là duy trì một biến đếm \texttt{nfree} cập nhật ngay trong \texttt{kalloc()}/\texttt{kfree()}, đổi lại phải giữ cho biến đó luôn khớp với danh sách trong mọi nhánh \texttt{freerange()}.
+
+\section{Kết quả kiểm thử}
+
+\texttt{user/sysinfotest.c} được bổ sung tám check, chạy sau toàn bộ 56 check của đồ án 1 nên đồng thời xác nhận không có hồi quy:
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|p{7.5cm}|p{6.5cm}|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Check} & \textbf{Ý nghĩa} \\ \hline
+        \texttt{freemem: reports a positive number of bytes} & Còn bộ nhớ trống \\ \hline
+        \texttt{freemem: value is a whole number of pages} & Giá trị chia hết cho 4096 \\ \hline
+        \texttt{freemem: value fits inside physical memory} & Nhỏ hơn \texttt{PHYSTOP - KERNBASE} \\ \hline
+        \texttt{freemem: sbrk grows the heap} & \texttt{sbrk(8*PGSIZE)} thành công \\ \hline
+        \texttt{freemem: drops after page allocation} & Giá trị giảm sau khi cấp trang \\ \hline
+        \texttt{freemem: drops by at least one page per allocated page} & Mức giảm $\ge 8$ trang \\ \hline
+        \texttt{freemem: drop stays within the data and page-table pages} & Mức giảm $\le 10$ trang \\ \hline
+        \texttt{freemem: recovers after the pages are freed} & \texttt{sbrk} âm trả lại trang \\ \hline
+    \end{tabular}
+    \caption{Tám check mới cho \texttt{freemem} trong \texttt{sysinfotest}}
+\end{table}
+
+Cận trên 10 trang là có chủ ý: \texttt{sbrk()} cấp 8 trang dữ liệu, cộng thêm tối đa 2 trang bảng trang nếu dải 8 trang vắt qua ranh giới giữa hai bảng cấp 0 liền nhau. Không dùng đẳng thức tuyệt đối vì số bảng trang phụ thuộc vị trí heap hiện tại.
+
+Kết quả chạy trên QEMU (\texttt{-smp 3}):
+
+\begin{codebox}[sysinfotest2]{\texttt{sysinfotest} sau khi mở rộng}
+    \begin{minted}{text}
+sysinfotest: sizeof(struct sysinfo) = 32992 bytes
+freemem: 133124096 bytes (about 126 MB) free
+PASS: freemem: reports a positive number of bytes
+PASS: freemem: value is a whole number of pages
+PASS: freemem: value fits inside physical memory
+PASS: freemem: sbrk grows the heap
+PASS: freemem: drops after page allocation
+PASS: freemem: drops by at least one page per allocated page
+PASS: freemem: drop stays within the data and page-table pages
+PASS: freemem: recovers after the pages are freed
+ALL TESTS PASSED
+    \end{minted}
+\end{codebox}
+
+Giá trị 133.124.096 byte xấp xỉ 126,9 MiB trên tổng 128 MiB. Chênh lệch 1.093.632 byte (267 trang) là vùng text/data của kernel cùng các bảng trang và kernel stack đã được cấp trước khi \texttt{init} chạy: một con số hợp lý, khớp với kỳ vọng chứ không phải giá trị ngẫu nhiên.

@@ -11,6 +11,10 @@ Thư mục này chứa báo cáo của các lab.
 - `lab1/` — báo cáo Lab 1 (quản lý file, quản lý tiến trình, `sysinfo`).
   - `lab1-report.md`: bản Markdown.
   - `latex/`: mã nguồn LaTeX; xem `latex/README.md`.
+- `lab2/` — báo cáo Lab 2 (bộ nhớ: `freemem`, `vmprint`, `pgaccess`).
+  - `lab2-report.md`: bản Markdown.
+  - `report.pdf`: bản PDF build từ LaTeX.
+  - `latex/`: mã nguồn LaTeX; xem `latex/README.md`.
 
 ## Quy ước
 

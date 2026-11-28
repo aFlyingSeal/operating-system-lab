@@ -1,0 +1,45 @@
+\newpage
+
+\thispagestyle{empty}
+
+\begin{center}
+    \Large\textbf{BẢNG PHÂN CHIA CÔNG VIỆC}
+\end{center}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{6pt}
+    \setlength{\arrayrulewidth}{1pt}
+
+    \begin{tabularx}{\textwidth}{|p{2cm}|p{4cm}|X|c|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{MSSV} & \textbf{Họ và tên} & \textbf{Phân công công việc} & \textbf{\%} \\ \hline
+
+        24120010 & Trần Văn Tấn Khôi &
+        \vspace{-0.5\baselineskip}
+        \begin{itemize}[itemsep=0pt, topsep=0pt, partopsep=0pt, parsep=0pt]
+            \item Khảo sát cơ chế phân trang Sv39, \texttt{walk()}, \texttt{mappages()} và \texttt{memlayout.h}.
+            \item Bổ sung \texttt{freemem} vào \texttt{sysinfo}: \texttt{kalloc.c}, \texttt{sysinfo.h}, \texttt{sysproc.c}.
+            \item Viết chương 2 - Cơ sở lý thuyết.
+        \end{itemize} & 100\% \\ \hline
+
+        24120035 & Lê Thành Đạt &
+        \vspace{-0.5\baselineskip}
+        \begin{itemize}[itemsep=0pt, topsep=0pt, partopsep=0pt, parsep=0pt]
+            \item Cài đặt \texttt{vmprint()} đệ quy trong \texttt{kernel/vm.c}.
+            \item Đặt mốc in trong \texttt{exec()} và bổ sung \texttt{PTE\_LEAF}.
+            \item Thêm system call \texttt{vmprint()} để in theo yêu cầu.
+            \item Viết chương 4 - In bảng trang.
+        \end{itemize} & 100\% \\ \hline
+
+        24120361 & Trịnh Tuấn Kiệt &
+        \vspace{-0.5\baselineskip}
+        \begin{itemize}[itemsep=0pt, topsep=0pt, partopsep=0pt, parsep=0pt]
+            \item Cài đặt system call \texttt{pgaccess} và cờ \texttt{PTE\_A}.
+            \item Viết \texttt{user/pgtbltest.c}, chạy kiểm thử trên QEMU.
+            \item Viết chương 5 - Phát hiện trang được truy cập.
+        \end{itemize} & 100\% \\ \hline
+    \end{tabularx}
+\end{table}

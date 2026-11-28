@@ -1,0 +1,113 @@
+\chapter{Cơ sở lý thuyết: bảng trang trong xv6}
+
+\newpage
+
+\section{Mô hình Sv39}
+
+RISC-V dùng phân trang ba cấp theo chuẩn Sv39: địa chỉ ảo dài 39 bit, một trang 4096 byte (\texttt{PGSIZE}), mỗi bảng trang là một trang chứa 512 PTE 8 byte. Một địa chỉ ảo được chia như sau (\texttt{kernel/riscv.h:382-384}):
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|c|c|c|l|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Bit} & \textbf{Độ rộng} & \textbf{Chỉ số} & \textbf{Ý nghĩa} \\ \hline
+        38--30 & 9 & \texttt{PX(2)} & Chỉ số trong bảng trang cấp 2 (gốc) \\ \hline
+        29--21 & 9 & \texttt{PX(1)} & Chỉ số trong bảng trang cấp 1 \\ \hline
+        20--12 & 9 & \texttt{PX(0)} & Chỉ số trong bảng trang cấp 0 (trang lá) \\ \hline
+        11--0 & 12 & offset & Vị trí trong trang \\ \hline
+    \end{tabular}
+    \caption{Chia địa chỉ ảo của Sv39, xem \texttt{PX(level, va)}}
+\end{table}
+
+xv6 giới hạn \texttt{MAXVA = 1 << 38} thay vì $2^{39}$, để địa chỉ hợp lệ không bao giờ có bit 38 bật và không phải sign-extend (\texttt{kernel/riscv.h:388}).
+
+\section{Bit trong PTE}
+
+Mỗi PTE 64 bit gồm số hiệu trang vật lý (PPN) ở các bit 53--10 và các bit cờ ở 9 bit thấp (\texttt{kernel/riscv.h:361-376}):
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular}{|l|c|l|}
+        \hline
+        \rowcolor[rgb]{0.8, 0.9, 1.0}
+        \textbf{Cờ} & \textbf{Bit} & \textbf{Ý nghĩa} \\ \hline
+        \texttt{PTE\_V} & 0 & Hợp lệ; nếu không có thì phần cứng coi như chưa ánh xạ \\ \hline
+        \texttt{PTE\_R} & 1 & Cho phép đọc; đây cũng là dấu hiệu PTE lá \\ \hline
+        \texttt{PTE\_W} & 2 & Cho phép ghi \\ \hline
+        \texttt{PTE\_X} & 3 & Cho phép thực thi \\ \hline
+        \texttt{PTE\_U} & 4 & Truy cập được từ chế độ người dùng \\ \hline
+        \texttt{PTE\_A} & 6 & Đã được truy cập (đọc hoặc ghi); chương 5 dùng cờ này \\ \hline
+    \end{tabular}
+    \caption{Các bit cờ của PTE mà xv6 sử dụng}
+\end{table}
+
+Hai phép biến đổi qua lại được định nghĩa bằng macro: \texttt{PA2PTE(pa) = (pa >> 12) << 10} và \texttt{PTE2PA(pte) = (pte >> 10) << 12}. \texttt{PTE\_FLAGS(pte) = pte \& 0x3FF} lấy 10 bit cờ để tra bảng trên.
+
+Một PTE không có \texttt{R}, \texttt{W}, \texttt{X} là PTE \textbf{trung gian}: nó trỏ tới bảng trang cấp dưới chứ không trỏ tới một trang dữ liệu. xv6 phân biệt hai loại này bằng macro \texttt{PTE\_LEAF} (\texttt{kernel/riscv.h:376}):
+
+\begin{codebox}[pteLeaf]{\texttt{PTE\_LEAF}}
+    \begin{minted}{c}
+// A leaf PTE maps a page; a non-leaf PTE points at the next page-table page.
+// walk() in vm.c uses this under LAB_PGTBL to stop at a superpage.
+#define PTE_LEAF(pte) (((pte) & (PTE_R | PTE_W | PTE_X)) != 0)
+    \end{minted}
+\end{codebox}
+
+Macro này do nhóm bổ sung: bản xv6 nhận từ nhánh \texttt{syscall} đã dùng \texttt{PTE\_LEAF} trong \texttt{walk()} dưới \texttt{\#ifdef LAB\_PGTBL} nhưng \texttt{riscv.h} lại chưa định nghĩa, nên chỉ cần đổi \texttt{LAB} sang \texttt{pgtbl} là build dừng ở \texttt{kernel/vm.o} với lỗi \texttt{implicit declaration of function 'PTE\_LEAF'}.
+
+\section{Đi xuống bảng trang: \texttt{walk()}}
+
+\texttt{walk()} (\texttt{kernel/vm.c:96-118}) là hàm trung tâm của cả ba bài tập:
+
+\begin{codebox}[walk]{\texttt{walk()}}
+    \begin{minted}{c}
+pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc)
+{
+  if(va >= MAXVA)
+    panic("walk");
+
+  for(int level = 2; level > 0; level--) {
+    pte_t *pte = &pagetable[PX(level, va)];
+    if(*pte & PTE_V) {
+      pagetable = (pagetable_t)PTE2PA(*pte);
+#ifdef LAB_PGTBL
+      if(PTE_LEAF(*pte)) {
+        return pte;
+      }
+#endif
+    } else {
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+        return 0;
+      memset(pagetable, 0, PGSIZE);
+      *pte = PA2PTE(pagetable) | PTE_V;
+    }
+  }
+  return &pagetable[PX(0, va)];
+}
+    \end{minted}
+\end{codebox}
+
+Hàm trả về \textbf{con trỏ tới PTE} chứ không phải địa chỉ vật lý: nhờ vậy người gọi đọc được cờ (như \texttt{pgaccess} cần) và sửa được bit (như \texttt{PTE\_A}).
+
+\section{Bố cục bộ nhớ và các hàm ánh xạ}
+
+\texttt{memlayout.h:50-59} mô tả bố cục địa chỉ ảo của một tiến trình: văn bản (text) ở địa chỉ 0, dữ liệu và bss ngay sau, stack cố định một trang (\texttt{USERSTACK = 1}) kèm một trang chắn phía dưới, vùng heap mọc lên bằng \texttt{sbrk()}, và ở hai trang cuối của không gian địa chỉ là \texttt{TRAPFRAME} ($\texttt{MAXVA} - 2\,\texttt{PGSIZE}$) và \texttt{TRAMPOLINE} ($\texttt{MAXVA} - \texttt{PGSIZE}$).
+
+Các hàm liên quan:
+
+\begin{itemize}[itemsep=0pt, topsep=2.5pt, leftmargin=1.5cm]
+    \item \texttt{mappages()} (\texttt{kernel/vm.c:160}) gọi \texttt{walk(..., 1)} cho từng trang, cấp bảng trang thiếu bằng \texttt{kalloc()}, rồi ghi \texttt{PA2PTE(pa) | perm}.
+    \item \texttt{uvmalloc()} (\texttt{kernel/vm.c:254}) cấp trang vật lý cho vùng heap mọc lên; \texttt{uvmdealloc()} thu hồi khi \texttt{sbrk()} âm.
+    \item \texttt{uvmclear()} (\texttt{kernel/vm.c:373}) xoá \texttt{PTE\_U} để biến một trang đã ánh xạ thành trang chắn: PTE vẫn \texttt{V}, nhưng truy cập từ user sẽ fault.
+    \item \texttt{freewalk()} (\texttt{kernel/vm.c:304}) duyệt đệ quy đúng theo cây để giải phóng các bảng trang.
+\end{itemize}
+
+\texttt{walk()} và \texttt{freewalk()} chính là hai mẫu để viết \texttt{vmprint()} ở chương 4: một hàm đi xuống theo cây và một hàm đệ quy theo cấp.
+
+Một điểm cần nêu trước: xv6 \textbf{không} có handler cho lỗi \texttt{A}/\texttt{D}. Trên QEMU, phần cứng tự bật \texttt{PTE\_A} mỗi khi TLB nạp một PTE, nên bit này luôn phản ánh truy cập thật. Trên một CPU chỉ hỗ trợ \texttt{Svade} (fault khi \texttt{A = 0}) thì xv6 sẽ panic; đây là giả định của bài lab và được nêu lại ở mục 5.5.

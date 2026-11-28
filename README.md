@@ -10,9 +10,13 @@ operating-system/
 ├── patches/              # Patch nộp bài, sinh từ thư mục xv6-labs-2024
 ├── report/               # Báo cáo theo từng lab
 │   ├── lab0/             # Lab 0: system call trace
-│   └── lab1/             # Lab 1: file/process management + sysinfo
-│       ├── lab1-report.md
-│       └── latex/        # Mã nguồn LaTeX của báo cáo Lab 1
+│   ├── lab1/             # Lab 1: file/process management + sysinfo
+│   │   ├── lab1-report.md
+│   │   └── latex/        # Mã nguồn LaTeX của báo cáo Lab 1
+│   └── lab2/             # Lab 2: memory (freemem, vmprint, pgaccess)
+│       ├── lab2-report.md
+│       ├── report.pdf
+│       └── latex/        # Mã nguồn LaTeX của báo cáo Lab 2
 ├── xv6-labs-2024/        # Mã nguồn xv6 RISC-V đã chỉnh sửa
 └── README.md
 ```
