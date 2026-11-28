@@ -254,3 +254,13 @@ sys_pgaccess(void)
   }
   return 0;
 }
+
+// Print the calling process's page table.  exec() already dumps it once for
+// init, but this lets a user program ask for it at any point instead of
+// waiting for that one moment.
+uint64
+sys_vmprint(void)
+{
+  vmprint(myproc()->pagetable);
+  return 0;
+}
