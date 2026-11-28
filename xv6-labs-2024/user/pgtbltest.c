@@ -78,6 +78,24 @@ pgaccess_test(void)
   // Clear what is left before the error cases.
   check(pgaccess(buf, NPAGES, &mask) == 0, "pgaccess: range cleared");
 
+  // An invalid mask pointer must not clear the access bits.
+  buf[0] = 'c';
+  check(pgaccess(buf, 1, (void*)MAXVA) == -1,
+        "pgaccess: bad mask pointer is rejected");
+  check(pgaccess(buf, 1, &mask) == 0,
+        "pgaccess: call after bad mask succeeds");
+  check(mask == bitof(0),
+        "pgaccess: bad mask does not clear access bits");
+
+  // The base must be page-aligned.
+  buf[0] = 'd';
+  check(pgaccess(buf + 1, 1, &mask) == -1,
+        "pgaccess: unaligned base is rejected");
+  check(pgaccess(buf, 1, &mask) == 0,
+        "pgaccess: call after unaligned base succeeds");
+  check(mask == bitof(0),
+        "pgaccess: unaligned base does not clear access bits");
+
   // Unmapped memory: sbrk() shrink takes the pages away again.
   sbrk(-NPAGES * PGSIZE);
   check(pgaccess(buf, NPAGES, &mask) == -1,
@@ -90,8 +108,6 @@ pgaccess_test(void)
         "pgaccess: more than MAXPAGES pages is rejected");
   check(pgaccess((void*)MAXVA, 1, &mask) == -1,
         "pgaccess: virtual address beyond MAXVA is rejected");
-  check(pgaccess(buf, 1, (void*)MAXVA) == -1,
-        "pgaccess: bad mask pointer is rejected");
 }
 
 int

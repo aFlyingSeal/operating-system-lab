@@ -204,8 +204,8 @@ sys_sysinfo(void)
 // base + i*PGSIZE.
 //
 // Returns -1 if the range is invalid or only partly mapped.  The whole
-// range is checked before any access bit is cleared, so a rejected call
-// leaves the page table untouched.
+// range is checked and the mask is copied out before any access bit is
+// cleared, so a rejected call leaves the page table untouched.
 uint64
 sys_pgaccess(void)
 {
@@ -220,7 +220,10 @@ sys_pgaccess(void)
 
   if(len <= 0 || len > PGACCESS_MAX)
     return -1;
-  if(base >= MAXVA || base + (uint64)len * PGSIZE > MAXVA)
+  if(base >= MAXVA || base % PGSIZE != 0 ||
+     base + (uint64)len * PGSIZE > MAXVA)
+    return -1;
+  if(maskaddr >= MAXVA || maskaddr + sizeof(bits) > MAXVA)
     return -1;
 
   // Pass 1: every page must be a valid user mapping.
@@ -231,15 +234,23 @@ sys_pgaccess(void)
       return -1;
   }
 
-  // Pass 2: collect the access bits and clear them for the next call.
+  // Pass 2: collect the access bits.  Do not clear them yet: if copyout()
+  // fails, the next call must still see the same access state.
   for(int i = 0; i < len; i++){
     pte = walk(p->pagetable, base + i * PGSIZE, 0);
     if(*pte & PTE_A)
       bits |= 1UL << i;
-    *pte &= ~PTE_A;
   }
 
   if(copyout(p->pagetable, maskaddr, (char *)&bits, sizeof(bits)) < 0)
     return -1;
+
+  // Pass 3: clear only the bits that were successfully reported.
+  for(int i = 0; i < len; i++){
+    if(bits & (1UL << i)){
+      pte = walk(p->pagetable, base + i * PGSIZE, 0);
+      *pte &= ~PTE_A;
+    }
+  }
   return 0;
 }
